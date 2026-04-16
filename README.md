@@ -94,3 +94,17 @@ window.APP_CONFIG = {
 ## Важно
 
 Сейчас пароли сохраняются как обычный текст, чтобы не ломать уже готовую простую логику проекта. Для нормального продакшена лучше следующим шагом заменить это на `bcrypt` и токены/сессии.
+
+
+## Production domains
+
+- Frontend (Vercel): https://echo-xi-ashy.vercel.app
+- Backend (Railway): https://echo-messenger.up.railway.app
+
+### Railway Variables
+
+```env
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+NODE_ENV=production
+CORS_ORIGIN=https://echo-xi-ashy.vercel.app
+```
