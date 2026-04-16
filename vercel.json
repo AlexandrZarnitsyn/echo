@@ -11,28 +11,8 @@
       "destination": "https://echo-messenger.up.railway.app/socket.io/:path*"
     },
     {
-      "source": "/",
-      "destination": "/public/index.html"
-    },
-    {
-      "source": "/app.js",
-      "destination": "/public/app.js"
-    },
-    {
-      "source": "/config.js",
-      "destination": "/public/config.js"
-    },
-    {
-      "source": "/style.css",
-      "destination": "/public/style.css"
-    },
-    {
       "source": "/uploads/:path*",
       "destination": "https://echo-messenger.up.railway.app/uploads/:path*"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/public/$1"
     }
   ],
   "headers": [
