@@ -1,15 +1,35 @@
 # Realtime Messenger
 
-Готовая версия мессенджера для **GitHub + Railway**.
+Готовая версия мессенджера с **Node.js + Express + Socket.IO + PostgreSQL**.
 
-## Что уже подготовлено
+## Что внутри
 
-- проект очищен от локальных пользовательских данных
-- добавлен `.gitignore`
-- добавлен `.env.example`
-- сервер готов к деплою на Railway
-- добавлена поддержка `CORS_ORIGIN` для отдельного фронтенда
-- фронтенд умеет работать как с тем же доменом, так и с отдельным Railway backend
+- backend на `Express`
+- realtime-чат через `Socket.IO`
+- база данных `PostgreSQL`
+- готово для `GitHub + Railway`
+- фронтенд можно держать на Railway вместе с backend или отдельно на Vercel
+
+## Что нужно для запуска
+
+1. Создать базу PostgreSQL
+2. Заполнить `.env`
+3. Установить зависимости и запустить сервер
+
+## Переменные окружения
+
+Скопируй `.env.example` в `.env` и заполни:
+
+```env
+PORT=3000
+CORS_ORIGIN=*
+DATABASE_URL=postgresql://postgres:password@localhost:5432/realtime_messenger
+PGSSL=disable
+```
+
+- `DATABASE_URL` — строка подключения к PostgreSQL
+- `CORS_ORIGIN` — домен фронтенда, если фронт и backend разделены
+- `PGSSL=disable` — удобно для локального Postgres; на Railway обычно SSL оставляют включенным
 
 ## Локальный запуск
 
@@ -17,6 +37,8 @@
 npm install
 npm start
 ```
+
+Сервер сам создаст нужные таблицы при первом запуске.
 
 Открой `http://localhost:3000`.
 
@@ -33,20 +55,22 @@ git push -u origin main
 
 ## Railway
 
+### Вариант 1. Всё приложение на Railway
+
 1. Создай новый проект из GitHub-репозитория.
-2. В Variables добавь при необходимости:
-   - `PORT=3000`
+2. Добавь сервис `PostgreSQL`.
+3. В Variables у Node-сервиса должны быть:
+   - `DATABASE_URL=${{Postgres.DATABASE_URL}}` или выданный Railway URL базы
    - `CORS_ORIGIN=*`
-3. Railway сам установит зависимости и запустит `npm start`.
+4. Railway установит зависимости и запустит `npm start`.
 
-### Для варианта фронт + бэкенд отдельно
+### Вариант 2. Фронтенд на Vercel, backend на Railway
 
-Если фронтенд будет на Vercel, а бэкенд на Railway:
+На Railway:
+- backend и PostgreSQL держишь вместе
+- `CORS_ORIGIN=https://your-frontend.vercel.app`
 
-- на Railway укажи `CORS_ORIGIN=https://your-frontend.vercel.app`
-- в `public/config.js` пропиши URL Railway backend
-
-Пример:
+В `public/config.js` укажи Railway backend:
 
 ```js
 window.APP_CONFIG = {
@@ -57,22 +81,16 @@ window.APP_CONFIG = {
 
 ## Vercel
 
-В этом репозитории есть `vercel.json` для раздачи статического фронтенда из папки `public`.
+В репозитории есть `vercel.json` для раздачи статического фронтенда из `public`.
 
-Для Vercel нужно: 
+Важно: `Socket.IO` и API должны работать на Railway, а не на Vercel.
 
-1. Задеплоить backend на Railway.
-2. Перед деплоем фронтенда заменить содержимое `public/config.js` на URL Railway backend.
-3. Задеплоить этот же репозиторий на Vercel как статический frontend.
+## Структура
 
-> Важно: Socket.IO сервер должен работать на Railway, а не на Vercel.
+- `server.js` — backend + API + Socket.IO
+- `public/` — фронтенд
+- `db/init.sql` — схема PostgreSQL
 
-## Структура данных
+## Важно
 
-Во время работы сервер сам создаёт:
-
-- `data/users.json`
-- `data/messages.json`
-- `public/uploads/*`
-
-Эти файлы исключены из Git.
+Сейчас пароли сохраняются как обычный текст, чтобы не ломать уже готовую простую логику проекта. Для нормального продакшена лучше следующим шагом заменить это на `bcrypt` и токены/сессии.

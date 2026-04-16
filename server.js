@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const multer = require('multer');
+const crypto = require('crypto');
+const { Pool } = require('pg');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -11,42 +13,29 @@ const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
-const io = new Server(server, {
-  cors: {
-    origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean),
-    methods: ['GET', 'POST', 'PUT', 'DELETE']
-  }
-});
-const DATA_DIR = path.join(__dirname, 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
+const DATABASE_URL = process.env.DATABASE_URL;
 const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads');
 
-function ensureFile(filePath, fallback) {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify(fallback, null, 2), 'utf-8');
-  }
+if (!DATABASE_URL) {
+  console.error('DATABASE_URL is required');
+  process.exit(1);
 }
 
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-ensureFile(USERS_FILE, []);
-ensureFile(MESSAGES_FILE, []);
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false }
+});
 
-function readJson(filePath, fallback = []) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
-    return fallback;
+const io = new Server(server, {
+  cors: {
+    origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean),
+    methods: ['GET', 'POST', 'PUT', 'DELETE']
   }
-}
-
-function writeJson(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
-}
+});
 
 function normalizePhone(phone = '') {
   return String(phone).replace(/[^\d+]/g, '');
@@ -61,50 +50,133 @@ function makeDialogId(userA, userB) {
   return [String(userA), String(userB)].sort().join(':');
 }
 
-function enrichUser(user) {
+function mapUserRow(row) {
+  if (!row) return null;
   return {
-    ...user,
+    id: String(row.id),
+    name: row.name,
+    phone: row.phone,
+    password: row.password,
+    photo: row.photo || '',
+    showPhone: row.show_phone !== false,
+    createdAt: row.created_at
+  };
+}
+
+function mapMessageRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    dialogId: row.dialog_id,
+    text: row.text || '',
+    createdAt: row.created_at,
+    senderId: String(row.sender_id),
+    senderName: row.sender_name,
+    senderPhone: row.sender_phone,
+    recipientId: String(row.recipient_id),
+    recipientName: row.recipient_name,
+    recipientPhone: row.recipient_phone,
+    deliveredAt: row.delivered_at,
+    readAt: row.read_at,
+    editedAt: row.edited_at,
+    deletedAt: row.deleted_at
+  };
+}
+
+function publicUser(user, viewerId = null, blockedUserIds = []) {
+  const isSelf = viewerId && String(viewerId) === String(user.id);
+  return {
+    id: String(user.id),
+    name: user.name,
+    phone: (isSelf || user.showPhone) ? user.phone : '',
+    phoneHidden: !isSelf && !user.showPhone,
+    showPhone: user.showPhone,
     photo: user.photo || '',
-    showPhone: user.showPhone !== false,
-    blockedUserIds: Array.isArray(user.blockedUserIds) ? user.blockedUserIds.map(String) : []
+    blockedUserIds: isSelf ? blockedUserIds.map(String) : undefined
   };
 }
 
-function enrichMessage(message) {
-  return {
-    ...message,
-    editedAt: message.editedAt || null,
-    deletedAt: message.deletedAt || null
-  };
+async function query(sql, params = []) {
+  return pool.query(sql, params);
 }
 
-function publicUser(user, viewerId = null) {
-  const safeUser = enrichUser(user);
-  const isSelf = viewerId && String(viewerId) === safeUser.id;
+async function initDatabase() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL UNIQUE,
+      password TEXT NOT NULL,
+      photo TEXT NOT NULL DEFAULT '',
+      show_phone BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 
-  return {
-    id: safeUser.id,
-    name: safeUser.name,
-    phone: (isSelf || safeUser.showPhone) ? safeUser.phone : '',
-    phoneHidden: !isSelf && !safeUser.showPhone,
-    showPhone: safeUser.showPhone,
-    photo: safeUser.photo || '',
-    blockedUserIds: isSelf ? safeUser.blockedUserIds : undefined
-  };
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_blocks (
+      blocker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (blocker_id, blocked_id)
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      dialog_id TEXT NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      delivered_at TIMESTAMPTZ NULL,
+      read_at TIMESTAMPTZ NULL,
+      edited_at TIMESTAMPTZ NULL,
+      deleted_at TIMESTAMPTZ NULL
+    );
+  `);
+
+  await query('CREATE INDEX IF NOT EXISTS idx_messages_dialog_id_created_at ON messages(dialog_id, created_at DESC);');
+  await query('CREATE INDEX IF NOT EXISTS idx_messages_recipient_unread ON messages(recipient_id, read_at, deleted_at);');
 }
 
-function getUsersMap() {
-  return readJson(USERS_FILE, []).map(enrichUser);
+async function getUserById(userId) {
+  const result = await query('SELECT * FROM users WHERE id = $1 LIMIT 1', [String(userId)]);
+  return mapUserRow(result.rows[0]);
 }
 
-function getMessages() {
-  return readJson(MESSAGES_FILE, []).map(enrichMessage);
+async function getUserByPhone(phone) {
+  const result = await query('SELECT * FROM users WHERE phone = $1 LIMIT 1', [normalizePhone(phone)]);
+  return mapUserRow(result.rows[0]);
 }
 
-function areUsersBlocked(userA, userB) {
-  const left = enrichUser(userA);
-  const right = enrichUser(userB);
-  return left.blockedUserIds.includes(right.id) || right.blockedUserIds.includes(left.id);
+async function getBlockedIds(userId) {
+  const result = await query('SELECT blocked_id FROM user_blocks WHERE blocker_id = $1', [String(userId)]);
+  return result.rows.map((row) => String(row.blocked_id));
+}
+
+async function areUsersBlocked(userAId, userBId) {
+  const result = await query(
+    `SELECT 1
+     FROM user_blocks
+     WHERE (blocker_id = $1 AND blocked_id = $2)
+        OR (blocker_id = $2 AND blocked_id = $1)
+     LIMIT 1`,
+    [String(userAId), String(userBId)]
+  );
+  return result.rowCount > 0;
+}
+
+async function enrichAndBroadcastMessageStatus(changedRows) {
+  for (const row of changedRows) {
+    const message = mapMessageRow(row);
+    io.to(`user:${message.senderId}`).to(`user:${message.recipientId}`).emit('message:status-update', {
+      id: message.id,
+      deliveredAt: message.deliveredAt || null,
+      readAt: message.readAt || null
+    });
+  }
 }
 
 const storage = multer.diskStorage({
@@ -124,297 +196,415 @@ app.use(express.json({ limit: '10mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.post('/api/register', (req, res) => {
-  const { phone, password, name } = req.body || {};
-  const normalizedPhone = normalizePhone(phone || '');
+app.post('/api/register', async (req, res) => {
+  try {
+    const { phone, password, name } = req.body || {};
+    const normalizedPhone = normalizePhone(phone || '');
 
-  if (!name || name.trim().length < 2) {
-    return res.status(400).json({ error: 'Имя должно содержать минимум 2 символа' });
+    if (!name || name.trim().length < 2) {
+      return res.status(400).json({ error: 'Имя должно содержать минимум 2 символа' });
+    }
+    if (!isValidPhone(normalizedPhone)) {
+      return res.status(400).json({ error: 'Введите корректный номер телефона' });
+    }
+    if (!password || password.length < 4) {
+      return res.status(400).json({ error: 'Пароль должен содержать минимум 4 символа' });
+    }
+
+    const existing = await getUserByPhone(normalizedPhone);
+    if (existing) {
+      return res.status(409).json({ error: 'Аккаунт с таким номером уже существует' });
+    }
+
+    const id = crypto.randomUUID();
+    await query(
+      `INSERT INTO users (id, name, phone, password, photo, show_phone)
+       VALUES ($1, $2, $3, $4, '', TRUE)`,
+      [id, String(name).trim(), normalizedPhone, String(password)]
+    );
+
+    const newUser = await getUserById(id);
+    res.json({ user: publicUser(newUser, id, []) });
+  } catch (error) {
+    console.error('register error', error);
+    res.status(500).json({ error: 'Не удалось создать аккаунт' });
   }
-
-  if (!isValidPhone(normalizedPhone)) {
-    return res.status(400).json({ error: 'Введите корректный номер телефона' });
-  }
-
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Пароль должен содержать минимум 4 символа' });
-  }
-
-  const users = getUsersMap();
-  const exists = users.find((user) => user.phone === normalizedPhone);
-
-  if (exists) {
-    return res.status(409).json({ error: 'Аккаунт с таким номером уже существует' });
-  }
-
-  const newUser = enrichUser({
-    id: Date.now().toString(),
-    name: name.trim(),
-    phone: normalizedPhone,
-    password,
-    photo: '',
-    showPhone: true,
-    blockedUserIds: []
-  });
-
-  users.push(newUser);
-  writeJson(USERS_FILE, users);
-
-  res.json({ user: publicUser(newUser, newUser.id) });
 });
 
-app.post('/api/login', (req, res) => {
-  const { phone, password } = req.body || {};
-  const normalizedPhone = normalizePhone(phone || '');
-  const users = getUsersMap();
+app.post('/api/login', async (req, res) => {
+  try {
+    const { phone, password } = req.body || {};
+    const normalizedPhone = normalizePhone(phone || '');
+    const result = await query(
+      'SELECT * FROM users WHERE phone = $1 AND password = $2 LIMIT 1',
+      [normalizedPhone, String(password || '')]
+    );
+    const user = mapUserRow(result.rows[0]);
 
-  const user = users.find(
-    (item) => item.phone === normalizedPhone && item.password === password
-  );
+    if (!user) {
+      return res.status(401).json({ error: 'Неверный номер телефона или пароль' });
+    }
 
-  if (!user) {
-    return res.status(401).json({ error: 'Неверный номер телефона или пароль' });
+    const blockedUserIds = await getBlockedIds(user.id);
+    res.json({ user: publicUser(user, user.id, blockedUserIds) });
+  } catch (error) {
+    console.error('login error', error);
+    res.status(500).json({ error: 'Не удалось выполнить вход' });
   }
-
-  res.json({ user: publicUser(user, user.id) });
 });
 
-app.put('/api/profile', (req, res) => {
-  const { userId, name, showPhone } = req.body || {};
-  const users = getUsersMap();
-  const user = users.find((item) => item.id === String(userId));
+app.put('/api/profile', async (req, res) => {
+  try {
+    const { userId, name, showPhone } = req.body || {};
+    if (!name || String(name).trim().length < 2) {
+      return res.status(400).json({ error: 'Имя должно содержать минимум 2 символа' });
+    }
 
-  if (!user) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+    const existing = await getUserById(userId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    await query(
+      'UPDATE users SET name = $2, show_phone = $3 WHERE id = $1',
+      [String(userId), String(name).trim(), showPhone !== false]
+    );
+
+    const user = await getUserById(userId);
+    const blockedUserIds = await getBlockedIds(user.id);
+    io.emit('user:updated', publicUser(user));
+    res.json({ user: publicUser(user, user.id, blockedUserIds) });
+  } catch (error) {
+    console.error('profile update error', error);
+    res.status(500).json({ error: 'Не удалось обновить профиль' });
   }
-
-  if (!name || String(name).trim().length < 2) {
-    return res.status(400).json({ error: 'Имя должно содержать минимум 2 символа' });
-  }
-
-  user.name = String(name).trim();
-  user.showPhone = showPhone !== false;
-  writeJson(USERS_FILE, users);
-
-  io.emit('user:updated', publicUser(user));
-  res.json({ user: publicUser(user, user.id) });
 });
 
-app.post('/api/profile/photo', upload.single('photo'), (req, res) => {
-  const userId = String(req.body.userId || '');
-  const users = getUsersMap();
-  const user = users.find((item) => item.id === userId);
+app.post('/api/profile/photo', upload.single('photo'), async (req, res) => {
+  try {
+    const userId = String(req.body.userId || '');
+    const existing = await getUserById(userId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'Фото не загружено' });
+    }
 
-  if (!user) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+    await query('UPDATE users SET photo = $2 WHERE id = $1', [userId, `/uploads/${req.file.filename}`]);
+    const user = await getUserById(userId);
+    const blockedUserIds = await getBlockedIds(user.id);
+    io.emit('user:updated', publicUser(user));
+    res.json({ user: publicUser(user, user.id, blockedUserIds) });
+  } catch (error) {
+    console.error('photo upload error', error);
+    res.status(500).json({ error: 'Не удалось загрузить фото' });
   }
-
-  if (!req.file) {
-    return res.status(400).json({ error: 'Фото не загружено' });
-  }
-
-  user.photo = `/uploads/${req.file.filename}`;
-  writeJson(USERS_FILE, users);
-
-  io.emit('user:updated', publicUser(user));
-  res.json({ user: publicUser(user, user.id) });
 });
 
-app.get('/api/blacklist', (req, res) => {
-  const currentUserId = String(req.query.currentUserId || '');
-  const users = getUsersMap();
-  const currentUser = users.find((item) => item.id === currentUserId);
+app.get('/api/blacklist', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const currentUser = await getUserById(currentUserId);
+    if (!currentUser) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
 
-  if (!currentUser) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+    const blockedUsersResult = await query(
+      `SELECT u.*
+       FROM users u
+       INNER JOIN user_blocks ub ON ub.blocked_id = u.id
+       WHERE ub.blocker_id = $1
+       ORDER BY u.name ASC`,
+      [currentUserId]
+    );
+
+    res.json({ users: blockedUsersResult.rows.map((row) => publicUser(mapUserRow(row), currentUserId)) });
+  } catch (error) {
+    console.error('blacklist error', error);
+    res.status(500).json({ error: 'Не удалось получить черный список' });
   }
-
-  const blockedUsers = users
-    .filter((user) => currentUser.blockedUserIds.includes(user.id))
-    .map((user) => publicUser(user, currentUserId));
-
-  res.json({ users: blockedUsers });
 });
 
-app.post('/api/block/:otherUserId', (req, res) => {
-  const currentUserId = String(req.body?.currentUserId || '');
-  const otherUserId = String(req.params.otherUserId || '');
-  const users = getUsersMap();
-  const currentUser = users.find((item) => item.id === currentUserId);
-  const otherUser = users.find((item) => item.id === otherUserId);
+app.post('/api/block/:otherUserId', async (req, res) => {
+  try {
+    const currentUserId = String(req.body?.currentUserId || '');
+    const otherUserId = String(req.params.otherUserId || '');
+    const currentUser = await getUserById(currentUserId);
+    const otherUser = await getUserById(otherUserId);
 
-  if (!currentUser || !otherUser) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+    if (!currentUser || !otherUser) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    await query(
+      `INSERT INTO user_blocks (blocker_id, blocked_id)
+       VALUES ($1, $2)
+       ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
+      [currentUserId, otherUserId]
+    );
+
+    const blockedUserIds = await getBlockedIds(currentUserId);
+    io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(currentUser, currentUserId, blockedUserIds));
+    io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(otherUser));
+    res.json({ user: publicUser(currentUser, currentUserId, blockedUserIds) });
+  } catch (error) {
+    console.error('block error', error);
+    res.status(500).json({ error: 'Не удалось обновить черный список' });
   }
-
-  if (!currentUser.blockedUserIds.includes(otherUserId)) {
-    currentUser.blockedUserIds.push(otherUserId);
-  }
-
-  writeJson(USERS_FILE, users);
-  io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(currentUser, currentUserId));
-  io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(otherUser));
-  res.json({ user: publicUser(currentUser, currentUserId) });
 });
 
-app.delete('/api/block/:otherUserId', (req, res) => {
-  const currentUserId = String(req.query.currentUserId || '');
-  const otherUserId = String(req.params.otherUserId || '');
-  const users = getUsersMap();
-  const currentUser = users.find((item) => item.id === currentUserId);
-  const otherUser = users.find((item) => item.id === otherUserId);
+app.delete('/api/block/:otherUserId', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const otherUserId = String(req.params.otherUserId || '');
+    const currentUser = await getUserById(currentUserId);
+    const otherUser = await getUserById(otherUserId);
 
-  if (!currentUser || !otherUser) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
+    if (!currentUser || !otherUser) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    await query('DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2', [currentUserId, otherUserId]);
+    const blockedUserIds = await getBlockedIds(currentUserId);
+    io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(currentUser, currentUserId, blockedUserIds));
+    io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(otherUser));
+    res.json({ user: publicUser(currentUser, currentUserId, blockedUserIds) });
+  } catch (error) {
+    console.error('unblock error', error);
+    res.status(500).json({ error: 'Не удалось удалить из черного списка' });
   }
-
-  currentUser.blockedUserIds = currentUser.blockedUserIds.filter((id) => id !== otherUserId);
-  writeJson(USERS_FILE, users);
-  io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(currentUser, currentUserId));
-  io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(otherUser));
-  res.json({ user: publicUser(currentUser, currentUserId) });
 });
 
-app.get('/api/users', (req, res) => {
-  const currentUserId = String(req.query.currentUserId || '');
-  const search = normalizePhone(req.query.search || '');
-  const users = getUsersMap();
-  const messages = getMessages();
+app.get('/api/users', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const search = normalizePhone(req.query.search || '');
+    const currentUser = await getUserById(currentUserId);
 
-  const currentUser = users.find((item) => item.id === currentUserId);
-  if (!currentUser) {
-    return res.json({ users: [] });
+    if (!currentUser) {
+      return res.json({ users: [] });
+    }
+
+    const result = await query(
+      `WITH viewer_blocks AS (
+          SELECT blocked_id FROM user_blocks WHERE blocker_id = $1
+        ),
+        blocked_me AS (
+          SELECT blocker_id FROM user_blocks WHERE blocked_id = $1
+        ),
+        last_messages AS (
+          SELECT DISTINCT ON (m.dialog_id)
+            m.dialog_id,
+            m.text,
+            m.created_at,
+            m.sender_id,
+            m.deleted_at
+          FROM messages m
+          ORDER BY m.dialog_id, m.created_at DESC
+        ),
+        unread_counts AS (
+          SELECT sender_id, COUNT(*)::int AS unread_count
+          FROM messages
+          WHERE recipient_id = $1 AND read_at IS NULL AND deleted_at IS NULL
+          GROUP BY sender_id
+        )
+       SELECT
+         u.*,
+         lm.text AS last_message_text,
+         lm.created_at AS last_message_created_at,
+         lm.sender_id AS last_message_sender_id,
+         lm.deleted_at AS last_message_deleted_at,
+         COALESCE(uc.unread_count, 0) AS unread_count,
+         (vb.blocked_id IS NOT NULL) AS is_blocked,
+         (bm.blocker_id IS NOT NULL) AS blocked_by_user,
+         (lm.dialog_id IS NOT NULL) AS has_dialog
+       FROM users u
+       LEFT JOIN viewer_blocks vb ON vb.blocked_id = u.id
+       LEFT JOIN blocked_me bm ON bm.blocker_id = u.id
+       LEFT JOIN last_messages lm ON lm.dialog_id = CASE WHEN u.id < $1 THEN u.id || ':' || $1 ELSE $1 || ':' || u.id END
+       LEFT JOIN unread_counts uc ON uc.sender_id = u.id
+       WHERE u.id <> $1
+       ORDER BY COALESCE(lm.created_at, TO_TIMESTAMP(0)) DESC, u.name ASC`,
+      [currentUserId]
+    );
+
+    const filtered = result.rows
+      .map((row) => {
+        const user = mapUserRow(row);
+        return {
+          ...publicUser(user, currentUserId),
+          hasDialog: row.has_dialog,
+          lastMessage: row.last_message_created_at ? {
+            text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
+            createdAt: row.last_message_created_at,
+            senderId: String(row.last_message_sender_id),
+            deletedAt: row.last_message_deleted_at || null
+          } : null,
+          unreadCount: Number(row.unread_count || 0),
+          isBlocked: row.is_blocked,
+          blockedByUser: row.blocked_by_user,
+          canMessage: !row.is_blocked && !row.blocked_by_user
+        };
+      })
+      .filter((user) => {
+        if (search) return user.phone && normalizePhone(user.phone).includes(search);
+        return user.hasDialog || user.isBlocked;
+      });
+
+    res.json({ users: filtered });
+  } catch (error) {
+    console.error('users error', error);
+    res.status(500).json({ error: 'Не удалось получить список пользователей' });
   }
+});
 
-  const decoratedUsers = users
-    .filter((user) => user.id !== currentUserId)
-    .map((user) => {
-      const dialogId = makeDialogId(currentUserId, user.id);
-      const lastMessage = [...messages]
-        .filter((message) => message.dialogId === dialogId)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
-      const unreadCount = messages.filter((message) => (
-        message.dialogId === dialogId &&
-        message.recipientId === currentUserId &&
-        !message.readAt &&
-        !message.deletedAt
-      )).length;
-      const iBlocked = currentUser.blockedUserIds.includes(user.id);
-      const blockedMe = user.blockedUserIds.includes(currentUserId);
+app.get('/api/messages/:otherUserId', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const otherUserId = String(req.params.otherUserId || '');
+    if (!currentUserId || !otherUserId) {
+      return res.status(400).json({ error: 'Не выбран диалог' });
+    }
 
-      return {
-        ...publicUser(user, currentUserId),
-        hasDialog: Boolean(lastMessage),
-        lastMessage: lastMessage
-          ? {
-              text: lastMessage.deletedAt ? 'Сообщение удалено' : lastMessage.text,
-              createdAt: lastMessage.createdAt,
-              senderId: lastMessage.senderId,
-              deletedAt: lastMessage.deletedAt || null
-            }
-          : null,
-        unreadCount,
-        isBlocked: iBlocked,
-        blockedByUser: blockedMe,
-        canMessage: !iBlocked && !blockedMe
-      };
+    const currentUser = await getUserById(currentUserId);
+    const otherUser = await getUserById(otherUserId);
+    if (!currentUser || !otherUser) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    const dialogId = makeDialogId(currentUserId, otherUserId);
+    const result = await query(
+      `SELECT
+          m.*,
+          su.name AS sender_name,
+          su.phone AS sender_phone,
+          ru.name AS recipient_name,
+          ru.phone AS recipient_phone
+       FROM messages m
+       INNER JOIN users su ON su.id = m.sender_id
+       INNER JOIN users ru ON ru.id = m.recipient_id
+       WHERE m.dialog_id = $1
+       ORDER BY m.created_at ASC`,
+      [dialogId]
+    );
+
+    const iBlockedResult = await query(
+      'SELECT 1 FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2 LIMIT 1',
+      [currentUserId, otherUserId]
+    );
+    const blockedByResult = await query(
+      'SELECT 1 FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2 LIMIT 1',
+      [otherUserId, currentUserId]
+    );
+
+    res.json({
+      messages: result.rows.map(mapMessageRow),
+      canMessage: iBlockedResult.rowCount === 0 && blockedByResult.rowCount === 0,
+      isBlocked: iBlockedResult.rowCount > 0,
+      blockedByUser: blockedByResult.rowCount > 0
     });
-
-  const filtered = decoratedUsers.filter((user) => {
-    if (search) return user.phone && normalizePhone(user.phone).includes(search);
-    return user.hasDialog || user.isBlocked;
-  });
-
-  filtered.sort((a, b) => {
-    const aTime = a.lastMessage ? new Date(a.lastMessage.createdAt).getTime() : 0;
-    const bTime = b.lastMessage ? new Date(b.lastMessage.createdAt).getTime() : 0;
-    if (bTime !== aTime) return bTime - aTime;
-    return a.name.localeCompare(b.name, 'ru');
-  });
-
-  res.json({ users: filtered });
+  } catch (error) {
+    console.error('messages fetch error', error);
+    res.status(500).json({ error: 'Не удалось получить сообщения' });
+  }
 });
 
-app.get('/api/messages/:otherUserId', (req, res) => {
-  const currentUserId = String(req.query.currentUserId || '');
-  const otherUserId = String(req.params.otherUserId || '');
-  const users = getUsersMap();
-  const currentUser = users.find((item) => item.id === currentUserId);
-  const otherUser = users.find((item) => item.id === otherUserId);
+app.put('/api/messages/:messageId', async (req, res) => {
+  try {
+    const messageId = String(req.params.messageId || '');
+    const currentUserId = String(req.body?.currentUserId || '');
+    const text = String(req.body?.text || '').trim();
 
-  if (!currentUserId || !otherUserId) {
-    return res.status(400).json({ error: 'Не выбран диалог' });
+    if (!text) {
+      return res.status(400).json({ error: 'Текст сообщения не должен быть пустым' });
+    }
+
+    const existing = await query('SELECT * FROM messages WHERE id = $1 LIMIT 1', [messageId]);
+    const message = existing.rows[0];
+    if (!message) {
+      return res.status(404).json({ error: 'Сообщение не найдено' });
+    }
+    if (String(message.sender_id) !== currentUserId) {
+      return res.status(403).json({ error: 'Можно редактировать только свои сообщения' });
+    }
+    if (message.deleted_at) {
+      return res.status(400).json({ error: 'Удаленное сообщение нельзя изменить' });
+    }
+
+    const updated = await query(
+      `UPDATE messages
+       SET text = $2, edited_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [messageId, text]
+    );
+
+    const fullMessage = await query(
+      `SELECT
+          m.*,
+          su.name AS sender_name,
+          su.phone AS sender_phone,
+          ru.name AS recipient_name,
+          ru.phone AS recipient_phone
+       FROM messages m
+       INNER JOIN users su ON su.id = m.sender_id
+       INNER JOIN users ru ON ru.id = m.recipient_id
+       WHERE m.id = $1`,
+      [messageId]
+    );
+
+    const payload = mapMessageRow(fullMessage.rows[0]);
+    io.to(`user:${payload.senderId}`).to(`user:${payload.recipientId}`).emit('message:updated', payload);
+    res.json({ message: payload });
+  } catch (error) {
+    console.error('message edit error', error);
+    res.status(500).json({ error: 'Не удалось обновить сообщение' });
   }
-
-  if (!currentUser || !otherUser) {
-    return res.status(404).json({ error: 'Пользователь не найден' });
-  }
-
-  const dialogId = makeDialogId(currentUserId, otherUserId);
-  const messages = getMessages()
-    .filter((message) => message.dialogId === dialogId)
-    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-
-  res.json({
-    messages,
-    canMessage: !areUsersBlocked(currentUser, otherUser),
-    isBlocked: currentUser.blockedUserIds.includes(otherUserId),
-    blockedByUser: otherUser.blockedUserIds.includes(currentUserId)
-  });
 });
 
-app.put('/api/messages/:messageId', (req, res) => {
-  const messageId = String(req.params.messageId || '');
-  const currentUserId = String(req.body?.currentUserId || '');
-  const text = String(req.body?.text || '').trim();
-  const messages = getMessages();
-  const message = messages.find((item) => item.id === messageId);
+app.delete('/api/messages/:messageId', async (req, res) => {
+  try {
+    const messageId = String(req.params.messageId || '');
+    const currentUserId = String(req.query.currentUserId || '');
+    const existing = await query('SELECT * FROM messages WHERE id = $1 LIMIT 1', [messageId]);
+    const message = existing.rows[0];
 
-  if (!message) {
-    return res.status(404).json({ error: 'Сообщение не найдено' });
+    if (!message) {
+      return res.status(404).json({ error: 'Сообщение не найдено' });
+    }
+    if (String(message.sender_id) !== currentUserId) {
+      return res.status(403).json({ error: 'Можно удалять только свои сообщения' });
+    }
+
+    await query(
+      `UPDATE messages
+       SET text = '', deleted_at = NOW(), edited_at = NULL
+       WHERE id = $1`,
+      [messageId]
+    );
+
+    const fullMessage = await query(
+      `SELECT
+          m.*,
+          su.name AS sender_name,
+          su.phone AS sender_phone,
+          ru.name AS recipient_name,
+          ru.phone AS recipient_phone
+       FROM messages m
+       INNER JOIN users su ON su.id = m.sender_id
+       INNER JOIN users ru ON ru.id = m.recipient_id
+       WHERE m.id = $1`,
+      [messageId]
+    );
+
+    const payload = mapMessageRow(fullMessage.rows[0]);
+    io.to(`user:${payload.senderId}`).to(`user:${payload.recipientId}`).emit('message:deleted', payload);
+    res.json({ message: payload });
+  } catch (error) {
+    console.error('message delete error', error);
+    res.status(500).json({ error: 'Не удалось удалить сообщение' });
   }
-
-  if (message.senderId !== currentUserId) {
-    return res.status(403).json({ error: 'Можно редактировать только свои сообщения' });
-  }
-
-  if (message.deletedAt) {
-    return res.status(400).json({ error: 'Удаленное сообщение нельзя изменить' });
-  }
-
-  if (!text) {
-    return res.status(400).json({ error: 'Текст сообщения не должен быть пустым' });
-  }
-
-  message.text = text;
-  message.editedAt = new Date().toISOString();
-  writeJson(MESSAGES_FILE, messages);
-
-  io.to(`user:${message.senderId}`).to(`user:${message.recipientId}`).emit('message:updated', message);
-  res.json({ message });
-});
-
-app.delete('/api/messages/:messageId', (req, res) => {
-  const messageId = String(req.params.messageId || '');
-  const currentUserId = String(req.query.currentUserId || '');
-  const messages = getMessages();
-  const message = messages.find((item) => item.id === messageId);
-
-  if (!message) {
-    return res.status(404).json({ error: 'Сообщение не найдено' });
-  }
-
-  if (message.senderId !== currentUserId) {
-    return res.status(403).json({ error: 'Можно удалять только свои сообщения' });
-  }
-
-  message.text = '';
-  message.deletedAt = new Date().toISOString();
-  message.editedAt = null;
-  writeJson(MESSAGES_FILE, messages);
-
-  io.to(`user:${message.senderId}`).to(`user:${message.recipientId}`).emit('message:deleted', message);
-  res.json({ message });
 });
 
 const onlineUsers = new Map();
@@ -423,110 +613,104 @@ function emitPresence(userId, isOnline) {
   io.emit('presence:update', { userId, isOnline });
 }
 
-function persistAndBroadcastStatuses(messages, changedMessages) {
-  if (!changedMessages.length) return;
-  writeJson(MESSAGES_FILE, messages);
-  changedMessages.forEach((message) => {
-    io.to(`user:${message.senderId}`).to(`user:${message.recipientId}`).emit('message:status-update', {
-      id: message.id,
-      deliveredAt: message.deliveredAt || null,
-      readAt: message.readAt || null
-    });
-  });
-}
-
 io.on('connection', (socket) => {
-  socket.on('join-user', (user) => {
-    if (!user?.id) return;
+  socket.on('join-user', async (user) => {
+    try {
+      if (!user?.id) return;
 
-    socket.data.user = user;
-    socket.join(`user:${user.id}`);
+      socket.data.user = user;
+      socket.join(`user:${user.id}`);
 
-    const count = onlineUsers.get(user.id) || 0;
-    onlineUsers.set(user.id, count + 1);
+      const count = onlineUsers.get(user.id) || 0;
+      onlineUsers.set(user.id, count + 1);
+      emitPresence(user.id, true);
 
-    emitPresence(user.id, true);
-
-    const messages = getMessages();
-    const changedMessages = [];
-    messages.forEach((message) => {
-      if (message.recipientId === user.id && !message.deliveredAt) {
-        message.deliveredAt = new Date().toISOString();
-        changedMessages.push(message);
-      }
-    });
-    persistAndBroadcastStatuses(messages, changedMessages);
+      const delivered = await query(
+        `UPDATE messages
+         SET delivered_at = NOW()
+         WHERE recipient_id = $1 AND delivered_at IS NULL
+         RETURNING *`,
+        [String(user.id)]
+      );
+      await enrichAndBroadcastMessageStatus(delivered.rows);
+    } catch (error) {
+      console.error('join-user error', error);
+    }
   });
 
-  socket.on('open-dialog', ({ currentUserId, otherUserId }) => {
-    const currentId = String(currentUserId || '');
-    const otherId = String(otherUserId || '');
-    if (!currentId || !otherId) return;
+  socket.on('open-dialog', async ({ currentUserId, otherUserId }) => {
+    try {
+      const currentId = String(currentUserId || '');
+      const otherId = String(otherUserId || '');
+      if (!currentId || !otherId) return;
+      if (await areUsersBlocked(currentId, otherId)) return;
 
-    const users = getUsersMap();
-    const currentUser = users.find((item) => item.id === currentId);
-    const otherUser = users.find((item) => item.id === otherId);
-    if (!currentUser || !otherUser || areUsersBlocked(currentUser, otherUser)) return;
-
-    const dialogId = makeDialogId(currentId, otherId);
-    const messages = getMessages();
-    const changedMessages = [];
-
-    messages.forEach((message) => {
-      if (message.dialogId !== dialogId) return;
-      if (message.recipientId !== currentId) return;
-      if (message.deletedAt) return;
-
-      let changed = false;
-      if (!message.deliveredAt) {
-        message.deliveredAt = new Date().toISOString();
-        changed = true;
-      }
-      if (!message.readAt) {
-        message.readAt = new Date().toISOString();
-        changed = true;
-      }
-      if (changed) changedMessages.push(message);
-    });
-
-    persistAndBroadcastStatuses(messages, changedMessages);
+      const dialogId = makeDialogId(currentId, otherId);
+      const changed = await query(
+        `UPDATE messages
+         SET
+           delivered_at = COALESCE(delivered_at, NOW()),
+           read_at = COALESCE(read_at, NOW())
+         WHERE dialog_id = $1
+           AND recipient_id = $2
+           AND deleted_at IS NULL
+           AND (delivered_at IS NULL OR read_at IS NULL)
+         RETURNING *`,
+        [dialogId, currentId]
+      );
+      await enrichAndBroadcastMessageStatus(changed.rows);
+    } catch (error) {
+      console.error('open-dialog error', error);
+    }
   });
 
-  socket.on('send-private-message', (payload) => {
-    const activeUser = socket.data.user;
-    if (!activeUser || !payload?.text?.trim() || !payload?.recipientId) return;
+  socket.on('send-private-message', async (payload) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser || !payload?.text?.trim() || !payload?.recipientId) return;
 
-    const users = getUsersMap();
-    const sender = users.find((user) => user.id === String(activeUser.id));
-    const recipient = users.find((user) => user.id === String(payload.recipientId));
-    if (!sender || !recipient) return;
-    if (areUsersBlocked(sender, recipient)) return;
+      const sender = await getUserById(activeUser.id);
+      const recipient = await getUserById(payload.recipientId);
+      if (!sender || !recipient) return;
+      if (await areUsersBlocked(sender.id, recipient.id)) return;
 
-    const dialogId = makeDialogId(sender.id, recipient.id);
-    const messages = getMessages();
-    const recipientOnline = onlineUsers.has(recipient.id);
+      const dialogId = makeDialogId(sender.id, recipient.id);
+      const recipientOnline = onlineUsers.has(String(recipient.id));
+      const messageId = crypto.randomUUID();
 
-    const message = enrichMessage({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      dialogId,
-      text: payload.text.trim(),
-      createdAt: new Date().toISOString(),
-      senderId: sender.id,
-      senderName: sender.name,
-      senderPhone: sender.phone,
-      recipientId: recipient.id,
-      recipientName: recipient.name,
-      recipientPhone: recipient.phone,
-      deliveredAt: recipientOnline ? new Date().toISOString() : null,
-      readAt: null,
-      editedAt: null,
-      deletedAt: null
-    });
+      await query(
+        `INSERT INTO messages (
+          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL)`,
+        [
+          messageId,
+          dialogId,
+          String(payload.text).trim(),
+          String(sender.id),
+          String(recipient.id),
+          recipientOnline ? new Date().toISOString() : null
+        ]
+      );
 
-    messages.push(message);
-    writeJson(MESSAGES_FILE, messages);
+      const fullMessage = await query(
+        `SELECT
+            m.*,
+            su.name AS sender_name,
+            su.phone AS sender_phone,
+            ru.name AS recipient_name,
+            ru.phone AS recipient_phone
+         FROM messages m
+         INNER JOIN users su ON su.id = m.sender_id
+         INNER JOIN users ru ON ru.id = m.recipient_id
+         WHERE m.id = $1`,
+        [messageId]
+      );
 
-    io.to(`user:${sender.id}`).to(`user:${recipient.id}`).emit('private-message', message);
+      const message = mapMessageRow(fullMessage.rows[0]);
+      io.to(`user:${sender.id}`).to(`user:${recipient.id}`).emit('private-message', message);
+    } catch (error) {
+      console.error('send-private-message error', error);
+    }
   });
 
   socket.on('disconnect', () => {
@@ -547,6 +731,14 @@ app.get('/api/presence', (_req, res) => {
   res.json({ onlineUserIds: [...onlineUsers.keys()] });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server started on http://localhost:${PORT}`);
-});
+(async () => {
+  try {
+    await initDatabase();
+    server.listen(PORT, () => {
+      console.log(`Server started on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error('startup error', error);
+    process.exit(1);
+  }
+})();
