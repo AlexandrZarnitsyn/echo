@@ -2,14 +2,21 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const cors = require('cors');
 const multer = require('multer');
 const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+const io = new Server(server, {
+  cors: {
+    origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean),
+    methods: ['GET', 'POST', 'PUT', 'DELETE']
+  }
+});
 const DATA_DIR = path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
@@ -109,6 +116,10 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+app.use(cors({
+  origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean),
+  credentials: false
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(path.join(__dirname, 'public')));

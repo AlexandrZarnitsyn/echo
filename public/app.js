@@ -42,6 +42,16 @@ const scrollToTopBtn = document.getElementById('scrollToTopBtn');
 const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 const themeSwitcher = document.getElementById('themeSwitcher');
 
+const APP_CONFIG = window.APP_CONFIG || {};
+const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
+const SOCKET_URL = String(APP_CONFIG.SOCKET_URL || API_BASE_URL || '').replace(/\/$/, '');
+
+function apiUrl(path) {
+  if (!path.startsWith('/')) return `${API_BASE_URL}/${path}`;
+  return `${API_BASE_URL}${path}`;
+}
+
+
 let mode = 'register';
 let currentUser = null;
 let currentDialogUser = null;
@@ -369,7 +379,7 @@ function applyDialogRestrictions() {
 async function loadUsers() {
   const search = searchInput.value.trim();
   const response = await fetch(
-    `/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`
+    apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)
   );
   const data = await response.json();
   users = data.users || [];
@@ -400,7 +410,7 @@ async function loadUsers() {
 }
 
 async function loadPresence() {
-  const response = await fetch('/api/presence');
+  const response = await fetch(apiUrl('/api/presence'));
   const data = await response.json();
   onlineUserIds = new Set(data.onlineUserIds || []);
   renderUsers();
@@ -440,7 +450,7 @@ async function selectDialog(userId) {
   applyDialogRestrictions();
   resetEditingState();
 
-  const response = await fetch(`/api/messages/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`);
+  const response = await fetch(apiUrl(`/api/messages/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`));
   const data = await response.json();
 
   currentDialogState = {
@@ -483,7 +493,7 @@ function exitDialog() {
 }
 
 function setupSocket() {
-  socket = io();
+  socket = io(SOCKET_URL || undefined, SOCKET_URL ? { transports: ['websocket', 'polling'] } : undefined);
 
   socket.on('connect', () => {
     socket.emit('join-user', currentUser);
@@ -558,7 +568,7 @@ async function submitAuth() {
   authError.textContent = '';
 
   try {
-    const response = await fetch(mode === 'register' ? '/api/register' : '/api/login', {
+    const response = await fetch(apiUrl(mode === 'register' ? '/api/register' : '/api/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -606,7 +616,7 @@ async function submitMessage() {
 
   if (editingMessageId) {
     try {
-      const response = await fetch(`/api/messages/${editingMessageId}`, {
+      const response = await fetch(apiUrl(`/api/messages/${editingMessageId}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ currentUserId: currentUser.id, text })
@@ -630,7 +640,7 @@ async function submitMessage() {
 
 async function deleteMessage(messageId) {
   try {
-    const response = await fetch(`/api/messages/${messageId}?currentUserId=${encodeURIComponent(currentUser.id)}`, {
+    const response = await fetch(apiUrl(`/api/messages/${messageId}?currentUserId=${encodeURIComponent(currentUser.id)}`), {
       method: 'DELETE'
     });
     const data = await response.json();
@@ -669,7 +679,7 @@ function switchSettingsTab(tabName = 'account') {
 
 async function loadBlacklist() {
   if (!currentUser) return;
-  const response = await fetch(`/api/blacklist?currentUserId=${encodeURIComponent(currentUser.id)}`);
+  const response = await fetch(apiUrl(`/api/blacklist?currentUserId=${encodeURIComponent(currentUser.id)}`));
   const data = await response.json();
   blacklistUsers = data.users || [];
   renderBlacklist();
@@ -732,7 +742,7 @@ async function saveProfile() {
   }
 
   try {
-    const nameResponse = await fetch('/api/profile', {
+    const nameResponse = await fetch(apiUrl('/api/profile'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -753,7 +763,7 @@ async function saveProfile() {
       formData.append('userId', currentUser.id);
       formData.append('photo', profilePhotoInput.files[0]);
 
-      const photoResponse = await fetch('/api/profile/photo', {
+      const photoResponse = await fetch(apiUrl('/api/profile/photo'), {
         method: 'POST',
         body: formData
       });
@@ -776,7 +786,7 @@ async function toggleBlockUser() {
   if (!currentDialogUser) return;
 
   const method = currentDialogState.isBlocked ? 'DELETE' : 'POST';
-  const response = await fetch(`/api/block/${currentDialogUser.id}${method === 'DELETE' ? `?currentUserId=${encodeURIComponent(currentUser.id)}` : ''}`, {
+  const response = await fetch(apiUrl(`/api/block/${currentDialogUser.id}${method === 'DELETE' ? `?currentUserId=${encodeURIComponent(currentUser.id)}` : ''}`), {
     method,
     headers: method === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
     body: method === 'POST' ? JSON.stringify({ currentUserId: currentUser.id }) : undefined
@@ -796,7 +806,7 @@ async function toggleBlockUser() {
 }
 
 async function removeFromBlacklist(userId) {
-  const response = await fetch(`/api/block/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`, {
+  const response = await fetch(apiUrl(`/api/block/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`), {
     method: 'DELETE'
   });
   const data = await response.json();
