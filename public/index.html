@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Realtime Messenger</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body data-theme="dark">
+  <div class="app">
+    <div class="screen auth active" id="authScreen">
+      <div class="brand">Мессенджер</div>
+      <div class="tabs">
+        <button class="tab active" data-tab="register">Регистрация</button>
+        <button class="tab" data-tab="login">Вход</button>
+      </div>
+
+      <div class="auth-box">
+        <div class="auth-title" id="authTitle">Создать аккаунт</div>
+        <div class="auth-subtitle" id="authSubtitle">Зарегистрируйтесь по номеру телефона</div>
+        <div class="error" id="authError"></div>
+
+        <div class="form-group" id="nameGroup">
+          <label for="nameInput">Имя</label>
+          <input id="nameInput" type="text" placeholder="Например, Алексей" />
+        </div>
+
+        <div class="form-group">
+          <label for="phoneInput">Номер телефона</label>
+          <input id="phoneInput" type="tel" placeholder="+7 999 123-45-67" />
+        </div>
+
+        <div class="form-group">
+          <label for="passwordInput">Пароль</label>
+          <input id="passwordInput" type="password" placeholder="Минимум 4 символа" />
+        </div>
+
+        <button class="primary-btn" id="authBtn">Зарегистрироваться</button>
+      </div>
+    </div>
+
+    <div class="screen" id="chatScreen">
+      <div class="messenger-layout">
+        <aside class="sidebar">
+          <div class="sidebar-header">
+            <div class="current-user-block">
+              <img class="profile-avatar clickable-avatar" id="currentUserAvatar" alt="avatar" title="Открыть профиль" />
+              <div class="current-user-meta">
+                <div class="header-title">Диалоги</div>
+                <div class="header-subtitle" id="currentUserText"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="search-box">
+            <input id="searchInput" type="text" placeholder="Поиск по номеру телефона" />
+          </div>
+
+          <div class="user-list" id="userList"></div>
+        </aside>
+
+        <section class="chat-panel">
+          <div class="chat-header" id="chatHeader">
+            <button class="back-btn hidden" id="backToDialogsBtn" title="Выйти из чата">←</button>
+            <div class="chat-title-wrap">
+              <div class="header-title" id="dialogTitle">Выберите собеседника</div>
+              <div class="header-subtitle" id="dialogSubtitle">Личные сообщения в реальном времени</div>
+            </div>
+            <div class="chat-header-actions">
+              <button class="ghost-btn hidden" id="renameDialogBtn" type="button">Переименовать</button>
+              <button class="ghost-btn danger-btn hidden" id="blockToggleBtn" type="button"></button>
+            </div>
+          </div>
+
+          <div class="empty-state" id="emptyState">
+            Выберите пользователя слева, чтобы начать личную переписку.
+          </div>
+
+          <div class="chat-status-banner hidden" id="chatStatusBanner"></div>
+          <div class="chat-scroll-controls hidden" id="chatScrollControls">
+            <button class="scroll-fab" id="scrollToTopBtn" type="button" title="Наверх" aria-label="Прокрутить чат вверх">↑</button>
+            <button class="scroll-fab" id="scrollToBottomBtn" type="button" title="Вниз" aria-label="Прокрутить чат вниз">↓</button>
+          </div>
+          <div class="chat hidden" id="chat"></div>
+
+          <div class="input-area hidden" id="inputArea">
+            <div class="composer-row">
+              <input id="messageInput" type="text" placeholder="Введите сообщение..." />
+              <button id="sendBtn">Отправить</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="profileModal">
+    <div class="modal-card">
+      <div class="modal-title">Настройки аккаунта</div>
+      <div class="settings-tabs">
+        <button class="settings-tab active" data-tab="account" type="button">Профиль</button>
+        <button class="settings-tab" data-tab="blacklist" type="button">Черный список</button>
+      </div>
+
+      <div class="settings-panel" data-panel="account">
+        <div class="profile-preview">
+          <img class="profile-avatar large" id="profilePreviewAvatar" alt="preview" />
+        </div>
+
+        <div class="form-group">
+          <label for="profileNameInput">Имя</label>
+          <input id="profileNameInput" type="text" placeholder="Ваше имя" />
+        </div>
+
+        <div class="form-group">
+          <label for="profilePhonePreview">Ваш номер телефона</label>
+          <div class="readonly-field" id="profilePhonePreview"></div>
+        </div>
+
+        <label class="settings-toggle">
+          <input id="showPhoneToggle" type="checkbox" />
+          <span>
+            <strong>Показывать мой номер другим</strong>
+            <small>Если выключить, собеседники не увидят ваш номер телефона.</small>
+          </span>
+        </label>
+
+        <div class="theme-setting-card">
+          <div class="theme-setting-head">
+            <strong>Тема оформления</strong>
+            <small>Переключайте светлую и тёмную тему прямо из настроек аккаунта.</small>
+          </div>
+          <div class="theme-switcher" id="themeSwitcher">
+            <button class="theme-option active" data-theme-value="dark" type="button">Тёмная</button>
+            <button class="theme-option" data-theme-value="light" type="button">Светлая</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="profilePhotoInput">Фото профиля</label>
+          <input class="hidden-file-input" id="profilePhotoInput" type="file" accept="image/*" />
+          <label class="avatar-upload-btn" for="profilePhotoInput">
+            <span class="avatar-upload-icon">＋</span>
+            <span id="avatarUploadText">Выбрать аватарку</span>
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-btn" id="closeProfileBtn">Отмена</button>
+          <button class="primary-btn" id="saveProfileBtn">Сохранить</button>
+        </div>
+
+        <button class="ghost-btn logout-in-modal" id="logoutBtn">Выйти из аккаунта</button>
+      </div>
+
+      <div class="settings-panel hidden" data-panel="blacklist">
+        <div class="blacklist-empty" id="blacklistEmpty">Черный список пуст.</div>
+        <div class="blacklist-list" id="blacklistList"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,17 +1,14 @@
 {
-  "name": "full-messenger-fixed",
-  "private": true,
+  "name": "realtime-messenger",
   "version": "1.0.0",
-  "workspaces": [
-    "apps/server",
-    "apps/client",
-    "apps/desktop"
-  ],
+  "description": "Simple realtime messenger with accounts and synced messages",
+  "main": "server.js",
   "scripts": {
-    "dev": "concurrently \"npm run dev -w apps/server\" \"npm run dev -w apps/client\" \"npm run dev -w apps/desktop\"",
-    "install:all": "npm install"
+    "start": "node server.js"
   },
-  "devDependencies": {
-    "concurrently": "^9.0.1"
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.8.1",
+    "multer": "^1.4.5-lts.1"
   }
 }
