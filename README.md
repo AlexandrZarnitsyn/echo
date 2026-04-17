@@ -1,31 +1,30 @@
-# Realtime Messenger
+# Realtime Messenger — ready setup
 
-Готовая структура для раздельного деплоя:
+## Самый простой запуск: только Railway
+1. Загрузи этот репозиторий в GitHub.
+2. В Railway создай Postgres.
+3. Создай сервис из GitHub repo.
+4. В сервисе поставь **Root Directory** = `/backend`.
+5. Добавь переменные:
+   - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+   - `NODE_ENV=production`
+   - `CORS_ORIGIN=https://your-frontend-domain.vercel.app`
+   - `FRONTEND_ORIGIN=https://your-frontend-domain.vercel.app`
+6. Если фронтенд не нужен отдельно, просто открой Railway-домен: backend сам раздаёт UI из `backend/public`.
 
-- `backend/` — сервер для Railway
-- корень репозитория — статический фронтенд для Vercel
+## Если хочешь фронтенд на Vercel
+1. Импортируй этот же репозиторий в Vercel.
+2. `Root Directory` оставь `/`.
+3. В файле `config.js` укажи домен Railway backend:
 
-## Railway
+```js
+window.APP_CONFIG = {
+  API_BASE_URL: "https://YOUR-BACKEND.up.railway.app",
+  SOCKET_URL: "https://YOUR-BACKEND.up.railway.app"
+};
+```
 
-- Root Directory: `/backend`
-- Variables:
-  - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
-  - `NODE_ENV=production`
-  - `CORS_ORIGIN=https://echo-xi-ashy.vercel.app`
-
-## Vercel
-
-- Root Directory: `/`
-- Framework Preset: Other / Static
-- Никакие env не нужны
-
-## Домены уже прописаны
-
-- frontend: `https://echo-xi-ashy.vercel.app`
-- backend: `https://echo-messenger.up.railway.app`
-
-Если меняешь домены, обнови:
-
-- `config.js`
-- `vercel.json`
-- `backend/public/config.js`
+## Структура
+- `/backend` — Node.js + Express + Socket.IO + PostgreSQL
+- `/backend/public` — фронтенд для same-origin запуска с Railway
+- `/` — фронтенд для отдельного статического деплоя

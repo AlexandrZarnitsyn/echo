@@ -152,8 +152,15 @@ function normalizePhone(phone = '') {
   return String(phone).replace(/[^\d+]/g, '');
 }
 
+function resolveAssetUrl(value = '') {
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value) || value.startsWith('data:')) return value;
+  if (value.startsWith('/')) return `${API_BASE_URL}${value}`;
+  return `${API_BASE_URL}/${value}`;
+}
+
 function getAvatar(user) {
-  return (user && user.photo) ? user.photo : DEFAULT_AVATAR;
+  return (user && user.photo) ? resolveAssetUrl(user.photo) : DEFAULT_AVATAR;
 }
 
 function formatPhoneForDisplay(phone = '') {
