@@ -2414,3 +2414,76 @@ body[data-theme='light'] .avatar-suggestion-note,
 body[data-theme='light'] .avatar-suggestion-status {
   color: #475569;
 }
+
+
+.clickable-profile-trigger {
+  cursor: pointer;
+  border-radius: 16px;
+  padding: 4px 8px;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.clickable-profile-trigger:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.clickable-profile-trigger.is-disabled {
+  cursor: default;
+  pointer-events: none;
+}
+
+.contact-profile-card {
+  max-width: 520px;
+}
+
+.contact-profile-preview {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.contact-profile-avatar {
+  width: 132px;
+  height: 132px;
+  border-radius: 32px;
+  object-fit: cover;
+  cursor: pointer;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.24);
+  border: 2px solid rgba(255,255,255,0.18);
+}
+
+.contact-profile-name {
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.contact-profile-status {
+  text-align: center;
+  opacity: 0.8;
+  margin-top: 4px;
+  margin-bottom: 18px;
+}
+
+.contact-profile-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.contact-profile-field {
+  display: grid;
+  gap: 6px;
+}
+
+.contact-profile-label {
+  font-size: 13px;
+  opacity: 0.72;
+}
+
+body[data-theme="light"] .clickable-profile-trigger:hover {
+  background: rgba(17,24,39,0.06);
+}
+
+body[data-theme="light"] .contact-profile-avatar {
+  border-color: rgba(17,24,39,0.1);
+}

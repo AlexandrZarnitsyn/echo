@@ -15,6 +15,7 @@ const userList = document.getElementById('userList');
 const searchInput = document.getElementById('searchInput');
 const dialogTitle = document.getElementById('dialogTitle');
 const dialogSubtitle = document.getElementById('dialogSubtitle');
+const dialogProfileTrigger = document.getElementById('dialogProfileTrigger');
 const backToDialogsBtn = document.getElementById('backToDialogsBtn');
 const emptyState = document.getElementById('emptyState');
 const chat = document.getElementById('chat');
@@ -57,6 +58,16 @@ const mediaViewerNextBtn = document.getElementById('mediaViewerNextBtn');
 const mediaViewerCounter = document.getElementById('mediaViewerCounter');
 const composerDropHint = document.getElementById('composerDropHint');
 const profileModal = document.getElementById('profileModal');
+const contactProfileModal = document.getElementById('contactProfileModal');
+const contactProfileAvatar = document.getElementById('contactProfileAvatar');
+const contactProfileName = document.getElementById('contactProfileName');
+const contactProfileStatus = document.getElementById('contactProfileStatus');
+const contactProfileNameField = document.getElementById('contactProfileNameField');
+const contactProfilePhone = document.getElementById('contactProfilePhone');
+const contactProfileId = document.getElementById('contactProfileId');
+const contactProfileDialogType = document.getElementById('contactProfileDialogType');
+const contactProfileCreatedAt = document.getElementById('contactProfileCreatedAt');
+const closeContactProfileBtn = document.getElementById('closeContactProfileBtn');
 const closeProfileBtn = document.getElementById('closeProfileBtn');
 const saveProfileBtn = document.getElementById('saveProfileBtn');
 const profileNameInput = document.getElementById('profileNameInput');
@@ -171,6 +182,7 @@ async function parseApiResponse(response) {
 let mode = 'register';
 let currentUser = null;
 let currentDialogUser = null;
+let currentDialogProfile = null;
 let users = [];
 let onlineUserIds = new Set();
 let socket = null;
@@ -1539,6 +1551,7 @@ function updateDialogHeader() {
   if (!currentDialogUser) {
     dialogTitle.textContent = 'Выберите собеседника';
     dialogSubtitle.textContent = 'Личные сообщения в реальном времени';
+    updateDialogProfileTriggerState();
     backToDialogsBtn.classList.add('hidden');
     renameDialogBtn.classList.add('hidden');
     suggestAvatarBtn?.classList.add('hidden');
@@ -1608,6 +1621,7 @@ async function selectDialog(userId) {
 
 function exitDialog() {
   currentDialogUser = null;
+  currentDialogProfile = null;
   currentDialogState = {
     canMessage: true,
     isBlocked: false,
@@ -2205,7 +2219,9 @@ messageInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') submitMessage();
 });
 currentUserAvatar.addEventListener('click', openProfileModal);
+if (dialogProfileTrigger) dialogProfileTrigger.addEventListener('click', openContactProfile);
 closeProfileBtn.addEventListener('click', closeProfileModal);
+if (closeContactProfileBtn) closeContactProfileBtn.addEventListener('click', closeContactProfile);
 saveProfileBtn.addEventListener('click', saveProfile);
 logoutBtn.addEventListener('click', logout);
 backToDialogsBtn.addEventListener('click', exitDialog);
@@ -2311,6 +2327,16 @@ profilePhotoInput.addEventListener('change', () => {
   }
 });
 
+
+if (contactProfileAvatar) {
+  contactProfileAvatar.addEventListener('click', () => {
+    const profileUser = currentDialogProfile || currentDialogUser;
+    if (!profileUser) return;
+    const avatar = getAvatar(profileUser) || DEFAULT_AVATAR;
+    openMediaViewer(avatar, 'image', `${getDisplayName(profileUser)} — аватарка`);
+  });
+}
+
 settingsTabs.forEach((tab) => {
   tab.addEventListener('click', () => switchSettingsTab(tab.dataset.tab));
 });
@@ -2370,10 +2396,20 @@ profileModal.addEventListener('click', (event) => {
   if (event.target === profileModal) closeProfileModal();
 });
 
+if (contactProfileModal) {
+  contactProfileModal.addEventListener('click', (event) => {
+    if (event.target === contactProfileModal) closeContactProfile();
+  });
+}
+
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   if (!profileModal.classList.contains('hidden')) {
     closeProfileModal();
+    return;
+  }
+  if (contactProfileModal && !contactProfileModal.classList.contains('hidden')) {
+    closeContactProfile();
     return;
   }
   if (!groupModal.classList.contains('hidden')) {

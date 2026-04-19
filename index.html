@@ -66,7 +66,7 @@
         <section class="chat-panel">
           <div class="chat-header" id="chatHeader">
             <button class="back-btn hidden" id="backToDialogsBtn" title="Выйти из чата">←</button>
-            <div class="chat-title-wrap">
+            <div class="chat-title-wrap clickable-profile-trigger" id="dialogProfileTrigger" title="Открыть профиль собеседника">
               <div class="header-title" id="dialogTitle">Выберите собеседника</div>
               <div class="header-subtitle" id="dialogSubtitle">Личные сообщения в реальном времени</div>
             </div>
@@ -203,6 +203,46 @@
       <div class="settings-panel hidden" data-panel="blacklist">
         <div class="blacklist-empty" id="blacklistEmpty">Черный список пуст.</div>
         <div class="blacklist-list" id="blacklistList"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="contactProfileModal">
+    <div class="modal-card contact-profile-card">
+      <div class="modal-title">Профиль собеседника</div>
+      <div class="contact-profile-preview">
+        <img class="contact-profile-avatar" id="contactProfileAvatar" alt="avatar" />
+      </div>
+      <div class="contact-profile-name" id="contactProfileName">Пользователь</div>
+      <div class="contact-profile-status" id="contactProfileStatus">Не в сети</div>
+
+      <div class="contact-profile-grid">
+        <div class="contact-profile-field">
+          <span class="contact-profile-label">Имя</span>
+          <div class="readonly-field" id="contactProfileNameField"></div>
+        </div>
+        <div class="contact-profile-field">
+          <span class="contact-profile-label">Номер телефона</span>
+          <div class="readonly-field" id="contactProfilePhone"></div>
+        </div>
+        <div class="contact-profile-field">
+          <span class="contact-profile-label">ID пользователя</span>
+          <div class="readonly-field" id="contactProfileId"></div>
+        </div>
+        <div class="contact-profile-field">
+          <span class="contact-profile-label">Тип диалога</span>
+          <div class="readonly-field" id="contactProfileDialogType"></div>
+        </div>
+        <div class="contact-profile-field">
+          <span class="contact-profile-label">Дата регистрации</span>
+          <div class="readonly-field" id="contactProfileCreatedAt"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <div class="modal-actions">
+          <button class="primary-btn" id="closeContactProfileBtn" type="button">Закрыть</button>
+        </div>
       </div>
     </div>
   </div>

@@ -968,6 +968,57 @@ app.get('/api/users/all', async (req, res) => {
   }
 });
 
+
+app.get('/api/users/:userId/profile', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const targetUserId = String(req.params.userId || '');
+    if (!currentUserId || !targetUserId) {
+      return res.status(400).json({ error: 'Не указан пользователь' });
+    }
+
+    const [currentUser, targetUser] = await Promise.all([
+      getUserById(currentUserId),
+      getUserById(targetUserId)
+    ]);
+
+    if (!currentUser || !targetUser) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    const relationResult = await query(
+      `SELECT
+         EXISTS (
+           SELECT 1
+           FROM messages m
+           WHERE m.group_id IS NULL
+             AND ((m.sender_id = $1 AND m.recipient_id = $2) OR (m.sender_id = $2 AND m.recipient_id = $1))
+         ) AS has_dialog,
+         EXISTS (SELECT 1 FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2) AS is_blocked,
+         EXISTS (SELECT 1 FROM user_blocks WHERE blocker_id = $2 AND blocked_id = $1) AS blocked_by_user`,
+      [currentUserId, targetUserId]
+    );
+
+    const relation = relationResult.rows[0] || {};
+    if (currentUserId !== targetUserId && !relation.has_dialog && !relation.is_blocked && !relation.blocked_by_user) {
+      return res.status(403).json({ error: 'Профиль доступен только для собеседников из ваших диалогов' });
+    }
+
+    res.json({
+      user: {
+        ...publicUser(targetUser, currentUserId),
+        createdAt: targetUser.createdAt,
+        hasDialog: Boolean(relation.has_dialog),
+        isBlocked: Boolean(relation.is_blocked),
+        blockedByUser: Boolean(relation.blocked_by_user)
+      }
+    });
+  } catch (error) {
+    console.error('user profile error', error);
+    res.status(500).json({ error: 'Не удалось получить профиль пользователя' });
+  }
+});
+
 app.get('/api/messages/:otherUserId', async (req, res) => {
   try {
     const currentUserId = String(req.query.currentUserId || '');
