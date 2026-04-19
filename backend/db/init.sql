@@ -30,11 +30,3 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_dialog_id_created_at ON messages(dialog_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_recipient_unread ON messages(recipient_id, read_at, deleted_at);
-
-
-CREATE TABLE IF NOT EXISTS message_audio_plays (
-  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  listened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (message_id, user_id)
-);

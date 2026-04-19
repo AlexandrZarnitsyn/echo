@@ -87,8 +87,7 @@ function mapMessageRow(row) {
     attachmentName: row.attachment_name || '',
     groupId: row.group_id || '',
     groupName: row.group_name || '',
-    isGroup: Boolean(row.group_id),
-    audioListened: row.audio_listened === true || row.audio_listened === 't' || row.audio_listened === 1
+    isGroup: Boolean(row.group_id)
   };
 }
 
@@ -177,15 +176,6 @@ async function initDatabase() {
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT NOT NULL DEFAULT '';`);
-
-  await query(`
-    CREATE TABLE IF NOT EXISTS message_audio_plays (
-      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      listened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (message_id, user_id)
-    );
-  `);
 
   await query('CREATE INDEX IF NOT EXISTS idx_messages_dialog_id_created_at ON messages(dialog_id, created_at DESC);');
   await query('CREATE INDEX IF NOT EXISTS idx_messages_recipient_unread ON messages(recipient_id, read_at, deleted_at);');
@@ -690,19 +680,13 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
     if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
 
     const result = await query(
-      `SELECT m.*, su.name AS sender_name, su.phone AS sender_phone, '' AS recipient_name, '' AS recipient_phone, g.name AS group_name,
-              EXISTS (
-                SELECT 1
-                FROM message_audio_plays map
-                WHERE map.message_id = m.id
-                  AND map.user_id = $2
-              ) AS audio_listened
+      `SELECT m.*, su.name AS sender_name, su.phone AS sender_phone, '' AS recipient_name, '' AS recipient_phone, g.name AS group_name
        FROM messages m
        INNER JOIN users su ON su.id = m.sender_id
        INNER JOIN groups g ON g.id = m.group_id
        WHERE m.group_id = $1
        ORDER BY m.created_at ASC`,
-      [groupId, currentUserId]
+      [groupId]
     );
 
     await query(
@@ -716,40 +700,6 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
   } catch (error) {
     console.error('group messages fetch error', error);
     res.status(500).json({ error: 'Не удалось получить сообщения беседы' });
-  }
-});
-
-app.post('/api/messages/:messageId/listen', async (req, res) => {
-  try {
-    const currentUserId = String(req.body?.currentUserId || req.query.currentUserId || '');
-    const messageId = String(req.params.messageId || '');
-    if (!currentUserId || !messageId) return res.status(400).json({ error: 'Недостаточно данных' });
-
-    const messageResult = await query('SELECT * FROM messages WHERE id = $1 LIMIT 1', [messageId]);
-    if (!messageResult.rowCount) return res.status(404).json({ error: 'Сообщение не найдено' });
-    const message = messageResult.rows[0];
-    if (message.attachment_type !== 'audio') return res.json({ ok: true, listened: false });
-
-    let hasAccess = false;
-    if (message.group_id) {
-      const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [message.group_id, currentUserId]);
-      hasAccess = membership.rowCount > 0;
-    } else {
-      hasAccess = String(message.sender_id) === currentUserId || String(message.recipient_id) === currentUserId;
-    }
-    if (!hasAccess) return res.status(403).json({ error: 'Нет доступа к сообщению' });
-
-    await query(
-      `INSERT INTO message_audio_plays (message_id, user_id, listened_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (message_id, user_id) DO UPDATE SET listened_at = EXCLUDED.listened_at`,
-      [messageId, currentUserId]
-    );
-
-    res.json({ ok: true, listened: true });
-  } catch (error) {
-    console.error('message listen error', error);
-    res.status(500).json({ error: 'Не удалось обновить статус прослушивания' });
   }
 });
 
@@ -787,22 +737,13 @@ app.get('/api/messages/:otherUserId', async (req, res) => {
           su.name AS sender_name,
           su.phone AS sender_phone,
           ru.name AS recipient_name,
-          ru.phone AS recipient_phone,
-          EXISTS (
-            SELECT 1
-            FROM message_audio_plays map
-            WHERE map.message_id = m.id
-              AND map.user_id = CASE
-                WHEN m.sender_id = $2 THEN m.recipient_id
-                ELSE $2
-              END
-          ) AS audio_listened
+          ru.phone AS recipient_phone
        FROM messages m
        INNER JOIN users su ON su.id = m.sender_id
        INNER JOIN users ru ON ru.id = m.recipient_id
        WHERE m.dialog_id = $1
        ORDER BY m.created_at ASC`,
-      [dialogId, currentUserId]
+      [dialogId]
     );
 
     const iBlockedResult = await query(

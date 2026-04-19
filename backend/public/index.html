@@ -88,23 +88,11 @@
 
           <div class="input-area hidden" id="inputArea">
             <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*,audio/*" multiple />
-            <div class="composer-row" id="composerTextRow">
+            <div class="composer-row">
               <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить файл" aria-label="Прикрепить файл">+</button>
               <button class="attach-btn" id="voiceRecordBtn" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение"></button>
               <input id="messageInput" type="text" placeholder="Введите сообщение..." />
-              <button id="sendBtn" type="button">Отправить</button>
-            </div>
-            <div class="composer-row composer-row-recording hidden" id="voiceRecordingPanel">
-              <button class="voice-cancel-btn" id="cancelVoiceRecordingBtn" type="button" aria-label="Отменить запись" title="Отменить запись">×</button>
-              <div class="voice-recording-shell">
-                <div class="voice-recording-head">
-                  <span class="voice-recording-live-dot"></span>
-                  <span class="voice-recording-label">Идёт запись голосового сообщения</span>
-                  <span class="voice-recording-time" id="voiceRecordingTime">0:00</span>
-                </div>
-                <div class="voice-recording-wave" id="voiceRecordingWave"></div>
-              </div>
-              <button class="primary-btn voice-send-btn" id="sendVoiceRecordingBtn" type="button">Отправить</button>
+              <button id="sendBtn">Отправить</button>
             </div>
           </div>
         </section>

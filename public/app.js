@@ -24,12 +24,6 @@ const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const messageAttachBtn = document.getElementById('messageAttachBtn');
 const voiceRecordBtn = document.getElementById('voiceRecordBtn');
-const composerTextRow = document.getElementById('composerTextRow');
-const voiceRecordingPanel = document.getElementById('voiceRecordingPanel');
-const voiceRecordingWave = document.getElementById('voiceRecordingWave');
-const voiceRecordingTime = document.getElementById('voiceRecordingTime');
-const cancelVoiceRecordingBtn = document.getElementById('cancelVoiceRecordingBtn');
-const sendVoiceRecordingBtn = document.getElementById('sendVoiceRecordingBtn');
 const messageAttachmentInput = document.getElementById('messageAttachmentInput');
 const messageAttachmentPreview = document.getElementById('messageAttachmentPreview');
 const messageAttachmentName = document.getElementById('messageAttachmentName');
@@ -120,10 +114,6 @@ let mediaRecorder = null;
 let mediaRecorderStream = null;
 let recordedChunks = [];
 let isRecordingVoice = false;
-let recordingStartedAt = 0;
-let recordingTimerId = null;
-let recordingAnimationId = null;
-let pendingVoiceSendOnStop = false;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -801,7 +791,6 @@ function showDialogUI(hasDialog) {
   emptyState.classList.toggle('hidden', hasDialog);
   chat.classList.toggle('hidden', !hasDialog);
   inputArea.classList.toggle('hidden', !hasDialog);
-  if (!hasDialog && isRecordingVoice) finishVoiceRecording({ cancel: true });
   chatScrollControls.classList.toggle('hidden', !hasDialog);
   updateChatScrollControls();
 }
@@ -851,87 +840,6 @@ function getStatusDots(message) {
 }
 
 
-function updateVoiceRecordingComposer() {
-  const recordingActive = isRecordingVoice;
-  composerTextRow?.classList.toggle('hidden', recordingActive);
-  voiceRecordingPanel?.classList.toggle('hidden', !recordingActive);
-  if (voiceRecordBtn) voiceRecordBtn.classList.toggle('is-recording', recordingActive);
-}
-
-function ensureRecordingWaveBars() {
-  if (!voiceRecordingWave || voiceRecordingWave.childElementCount) return;
-  const fragment = document.createDocumentFragment();
-  for (let i = 0; i < 34; i += 1) {
-    const bar = document.createElement('span');
-    bar.className = 'voice-recording-wave-bar';
-    bar.style.height = `${18 + (i % 6) * 4}px`;
-    fragment.appendChild(bar);
-  }
-  voiceRecordingWave.appendChild(fragment);
-}
-
-function startVoiceRecordingVisualization() {
-  ensureRecordingWaveBars();
-  updateVoiceRecordingComposer();
-  recordingStartedAt = Date.now();
-  if (voiceRecordingTime) voiceRecordingTime.textContent = '0:00';
-  if (recordingTimerId) clearInterval(recordingTimerId);
-  recordingTimerId = window.setInterval(() => {
-    if (voiceRecordingTime) voiceRecordingTime.textContent = formatAudioTime((Date.now() - recordingStartedAt) / 1000);
-  }, 250);
-
-  const animate = () => {
-    const bars = voiceRecordingWave?.querySelectorAll('.voice-recording-wave-bar') || [];
-    bars.forEach((bar) => {
-      const height = 10 + Math.round(Math.random() * 22);
-      bar.style.height = `${height}px`;
-      bar.classList.toggle('is-live', Math.random() > 0.35);
-      bar.style.opacity = String(0.45 + Math.random() * 0.55);
-    });
-    if (isRecordingVoice) recordingAnimationId = requestAnimationFrame(animate);
-  };
-
-  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
-  recordingAnimationId = requestAnimationFrame(animate);
-}
-
-function stopVoiceRecordingVisualization() {
-  updateVoiceRecordingComposer();
-  if (recordingTimerId) clearInterval(recordingTimerId);
-  recordingTimerId = null;
-  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
-  recordingAnimationId = null;
-  if (voiceRecordingTime) voiceRecordingTime.textContent = '0:00';
-  voiceRecordingWave?.querySelectorAll('.voice-recording-wave-bar').forEach((bar, index) => {
-    bar.classList.remove('is-live');
-    bar.style.height = `${14 + (index % 5) * 3}px`;
-    bar.style.opacity = '0.75';
-  });
-}
-
-async function markVoiceMessageListened(messageId) {
-  if (!currentUser?.id || !messageId) return;
-  try {
-    await fetch(apiUrl(`/api/messages/${messageId}/listen`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ currentUserId: currentUser.id })
-    });
-  } catch (error) {
-    console.error('voice listen status error', error);
-  }
-}
-
-async function finishVoiceRecording({ cancel = false, send = false } = {}) {
-  pendingVoiceSendOnStop = Boolean(send && !cancel);
-  if (!isRecordingVoice) {
-    pendingVoiceSendOnStop = false;
-    return;
-  }
-  if (cancel) recordedChunks = [];
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-}
-
 function formatAudioTime(totalSeconds) {
   const safe = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0;
   const minutes = Math.floor(safe / 60);
@@ -955,9 +863,6 @@ function buildWaveBars(seedValue, count = 42) {
 function createVoiceMessageNode(message, attachmentUrl, isMe) {
   const wrap = document.createElement('div');
   wrap.className = `voice-message ${isMe ? 'me' : 'other'}`;
-
-  const shouldTrackUnheard = Boolean(message?.attachmentType === 'audio');
-  let listenedMarked = Boolean(message?.audioListened);
 
   const audio = document.createElement('audio');
   audio.className = 'voice-audio-native';
@@ -985,7 +890,7 @@ function createVoiceMessageNode(message, attachmentUrl, isMe) {
   duration.textContent = '0:00';
 
   const dot = document.createElement('span');
-  dot.className = `voice-dot ${!listenedMarked && shouldTrackUnheard ? 'is-unheard' : ''}`;
+  dot.className = 'voice-dot';
 
   info.append(duration, dot);
   body.append(wave, info);
@@ -1017,14 +922,7 @@ function createVoiceMessageNode(message, attachmentUrl, isMe) {
   audio.addEventListener('loadedmetadata', () => {
     duration.textContent = formatAudioTime(audio.duration || 0);
   });
-  audio.addEventListener('play', async () => {
-    syncState();
-    if (shouldTrackUnheard && !listenedMarked) {
-      listenedMarked = true;
-      dot.classList.remove('is-unheard');
-      markVoiceMessageListened(message.id);
-    }
-  });
+  audio.addEventListener('play', syncState);
   audio.addEventListener('pause', syncState);
   audio.addEventListener('ended', () => {
     audio.currentTime = 0;
@@ -1173,8 +1071,6 @@ function applyDialogRestrictions() {
   if (!currentDialogUser) {
     blockToggleBtn.classList.add('hidden');
     if (voiceRecordBtn) voiceRecordBtn.disabled = false;
-    if (cancelVoiceRecordingBtn) cancelVoiceRecordingBtn.disabled = false;
-    if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = false;
     chatStatusBanner.classList.add('hidden');
     chatStatusBanner.textContent = '';
     inputArea.classList.remove('disabled');
@@ -1200,9 +1096,7 @@ function applyDialogRestrictions() {
   messageInput.disabled = !currentDialogState.canMessage;
   sendBtn.disabled = !currentDialogState.canMessage;
   if (messageAttachBtn) messageAttachBtn.disabled = !currentDialogState.canMessage;
-  if (voiceRecordBtn) voiceRecordBtn.disabled = !currentDialogState.canMessage || isRecordingVoice;
-  if (cancelVoiceRecordingBtn) cancelVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
-  if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
+  if (voiceRecordBtn) voiceRecordBtn.disabled = !currentDialogState.canMessage;
   if (!editingMessageId) {
     messageInput.placeholder = currentDialogState.canMessage ? 'Введите сообщение...' : 'Отправка сообщений недоступна';
   }
@@ -1477,7 +1371,7 @@ async function saveGroup() {
 
 async function toggleVoiceRecording() {
   if (isRecordingVoice) {
-    await finishVoiceRecording({ send: false });
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -1487,40 +1381,27 @@ async function toggleVoiceRecording() {
   try {
     mediaRecorderStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recordedChunks = [];
-    pendingVoiceSendOnStop = false;
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
     mediaRecorder = new MediaRecorder(mediaRecorderStream, { mimeType });
     mediaRecorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) recordedChunks.push(event.data);
     };
-    mediaRecorder.onstop = async () => {
-      const shouldSend = pendingVoiceSendOnStop;
-      pendingVoiceSendOnStop = false;
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
+      setPendingAttachment(file);
       isRecordingVoice = false;
-      stopVoiceRecordingVisualization();
+      if (voiceRecordBtn) {
+        voiceRecordBtn.classList.remove('is-recording');
+        voiceRecordBtn.setAttribute('aria-label', 'Записать голосовое сообщение');
+        voiceRecordBtn.setAttribute('title', 'Записать голосовое сообщение');
+      }
       mediaRecorderStream?.getTracks?.().forEach((track) => track.stop());
       mediaRecorderStream = null;
-
-      const hasAudio = recordedChunks.some((chunk) => chunk.size > 0);
-      if (!hasAudio) {
-        recordedChunks = [];
-        return;
-      }
-
-      const blob = new Blob(recordedChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
-      recordedChunks = [];
-      const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
-      if (shouldSend) {
-        pendingAttachments = [file];
-        pendingAttachmentIndex = 0;
-        requestAnimationFrame(() => sendPendingAttachment());
-      } else {
-        setPendingAttachment(file);
-      }
     };
     mediaRecorder.start();
     isRecordingVoice = true;
-    startVoiceRecordingVisualization();
+    if (voiceRecordBtn) voiceRecordBtn.textContent = '■';
   } catch (error) {
     alert('Не удалось получить доступ к микрофону');
   }
@@ -1602,12 +1483,7 @@ async function submitMessage() {
     return;
   }
 
-  if (isRecordingVoice) {
-    await finishVoiceRecording({ send: true });
-    return;
-  }
-
-  if (pendingAttachments.length) {
+  if (pendingAttachment) {
     await sendPendingAttachment();
     return;
   }
@@ -1838,12 +1714,6 @@ if (messageAttachBtn) {
 }
 if (voiceRecordBtn) {
   voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
-}
-if (cancelVoiceRecordingBtn) {
-  cancelVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ cancel: true }));
-}
-if (sendVoiceRecordingBtn) {
-  sendVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ send: true }));
 }
 if (createGroupBtn) createGroupBtn.addEventListener('click', openGroupModal);
 if (cancelGroupBtn) cancelGroupBtn.addEventListener('click', closeGroupModal);
