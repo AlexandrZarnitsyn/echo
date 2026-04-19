@@ -818,19 +818,47 @@ app.get('/api/media/:mediaId', async (req, res) => {
     const result = await query('SELECT mime_type, original_name, data, size_bytes FROM media_files WHERE id = $1 LIMIT 1', [mediaId]);
     const media = result.rows[0];
     if (!media) return res.status(404).json({ error: 'Файл не найден' });
-    res.setHeader('Content-Type', media.mime_type || 'application/octet-stream');
-    res.setHeader('Content-Length', String(media.size_bytes || (media.data ? media.data.length : 0)));
+
+    const buffer = media.data;
+    const totalSize = Number(media.size_bytes || (buffer ? buffer.length : 0));
+    const mimeType = media.mime_type || 'application/octet-stream';
+    const rangeHeader = req.headers.range;
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     if (media.original_name) {
-      const safeName = String(media.original_name).replace(/[\r\n"]/g, '_');
+      const safeName = String(media.original_name).replace(/[
+"]/g, '_');
       res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
     }
-    return res.end(media.data);
+
+    if (rangeHeader && totalSize > 0) {
+      const match = String(rangeHeader).match(/bytes=(\d*)-(\d*)/);
+      const startByte = match && match[1] !== '' ? Number(match[1]) : 0;
+      const requestedEnd = match && match[2] !== '' ? Number(match[2]) : totalSize - 1;
+      const endByte = Math.min(requestedEnd, totalSize - 1);
+
+      if (!Number.isFinite(startByte) || !Number.isFinite(endByte) || startByte < 0 || endByte < startByte || startByte >= totalSize) {
+        res.setHeader('Content-Range', `bytes */${totalSize}`);
+        return res.status(416).end();
+      }
+
+      const chunk = buffer.subarray(startByte, endByte + 1);
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${startByte}-${endByte}/${totalSize}`);
+      res.setHeader('Content-Length', String(chunk.length));
+      return res.end(chunk);
+    }
+
+    res.setHeader('Content-Length', String(totalSize));
+    return res.end(buffer);
   } catch (error) {
     console.error('media read error', error);
     return res.status(500).json({ error: 'Не удалось получить файл' });
   }
 });
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 console.log('[media] New uploads use PostgreSQL storage; local /uploads is legacy read-only compatibility.');

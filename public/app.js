@@ -1435,7 +1435,7 @@ function createVoiceMessageNode(message, attachmentUrl, isMe) {
   const audio = document.createElement('audio');
   audio.className = 'voice-audio-native';
   audio.src = attachmentUrl;
-  audio.preload = 'metadata';
+  audio.preload = 'auto';
 
   const playBtn = document.createElement('button');
   playBtn.className = 'voice-play-btn';
