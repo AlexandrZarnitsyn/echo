@@ -1560,7 +1560,12 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
-    invalidateDialogsBootstrapCache([String(sender.id), String(recipient.id)]);
+    if (groupId) {
+      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [groupId]);
+      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
+    } else {
+      invalidateDialogsBootstrapCache([String(sender.id), storedRecipientId]);
+    }
     res.json({ message });
   } catch (error) {
     console.error('message upload error', error);
@@ -1633,12 +1638,7 @@ app.post('/api/messages/avatar-suggestion', memoryUpload.single('photo'), async 
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
-    if (groupId) {
-      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [groupId]);
-      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
-    } else {
-      invalidateDialogsBootstrapCache([String(sender.id), storedRecipientId]);
-    }
+    invalidateDialogsBootstrapCache([String(sender.id), String(recipient.id)]);
     res.json({ message });
   } catch (error) {
     console.error('avatar suggestion send error', error);
