@@ -1599,7 +1599,10 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
-    invalidateDialogsBootstrapCache([String(sender.id), String(recipient.id)]);
+    const cacheTargets = groupId
+      ? [String(sender.id), ...await getGroupMemberIds(groupId)]
+      : [String(sender.id), String(storedRecipientId)];
+    invalidateDialogsBootstrapCache(cacheTargets);
     res.json({ message });
   } catch (error) {
     console.error('message upload error', error);

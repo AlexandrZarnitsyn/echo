@@ -2160,9 +2160,29 @@ async function fetchEligibleGroupUsers(groupId = '') {
   const endpoint = groupId
     ? `/api/groups/${encodeURIComponent(groupId)}/eligible-users?currentUserId=${encodeURIComponent(currentUser.id)}`
     : `/api/groups/eligible-users?currentUserId=${encodeURIComponent(currentUser.id)}`;
-  const response = await fetch(apiUrl(endpoint));
-  const data = await parseApiResponse(response);
-  return data.users || [];
+
+  try {
+    const response = await fetch(apiUrl(endpoint));
+    const data = await parseApiResponse(response);
+    if (Array.isArray(data.users) && data.users.length) return data.users;
+    if (Array.isArray(data.users) && !data.users.length) return [];
+  } catch (error) {
+    console.warn('eligible users fetch failed, using local fallback', error);
+  }
+
+  const currentGroupMemberIds = new Set(
+    groupId && currentDialogUser && currentDialogUser.type === 'group' && Array.isArray(currentDialogUser.memberIds)
+      ? currentDialogUser.memberIds.map((id) => String(id))
+      : []
+  );
+
+  return (users || []).filter((user) => {
+    if (!user || user.type === 'group') return false;
+    if (!user.hasDialog) return false;
+    if (user.isBlocked || user.blockedByUser || user.canMessage === false) return false;
+    if (groupId && currentGroupMemberIds.has(String(user.id))) return false;
+    return true;
+  });
 }
 
 async function renderGroupMembers() {
