@@ -41,6 +41,8 @@ const chatScrollControls = document.getElementById('chatScrollControls');
 const scrollToTopBtn = document.getElementById('scrollToTopBtn');
 const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 const themeSwitcher = document.getElementById('themeSwitcher');
+const soundNotificationsToggle = document.getElementById('soundNotificationsToggle');
+const silentModeToggle = document.getElementById('silentModeToggle');
 
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
@@ -66,6 +68,7 @@ let currentDialogState = {
   blockedByUser: false
 };
 let shouldStickToBottom = true;
+let notificationAudioContext = null;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -100,7 +103,75 @@ function getDialogAliases() {
 function getDisplayName(user) {
   if (!user) return '';
   const aliases = getDialogAliases();
-  return aliases[user.id] || user.name;
+  return aliases[user.id] || user.name || user.phone || 'Без имени';
+}
+
+function getUserNickname(user) {
+  const displayName = getDisplayName(user);
+  const base = String(displayName).trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-zа-я0-9_]+/gi, '');
+  return `@${base || 'user'}`;
+}
+
+function shouldMuteNotifications() {
+  return currentUser?.silentMode === true;
+}
+
+function shouldPlayNotificationSound() {
+  return !shouldMuteNotifications() && currentUser?.soundEnabled !== false;
+}
+
+async function ensureNotificationPermission() {
+  if (!("Notification" in window)) return 'unsupported';
+  if (Notification.permission === 'granted' || Notification.permission === 'denied') return Notification.permission;
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return Notification.permission || 'default';
+  }
+}
+
+function playNotificationSound() {
+  if (!shouldPlayNotificationSound()) return;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!notificationAudioContext) notificationAudioContext = new AudioCtx();
+    const ctx = notificationAudioContext;
+    if (ctx.state === 'suspended') ctx.resume();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(880, ctx.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.16);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.24);
+  } catch {}
+}
+
+async function showIncomingNotification(message) {
+  if (shouldMuteNotifications() || !message || message.senderId === currentUser?.id) return;
+  const permission = await ensureNotificationPermission();
+  if (permission !== 'granted') return;
+  if (!document.hidden && document.hasFocus()) return;
+  const title = message.senderName || 'Новое сообщение';
+  const body = message.deletedAt ? 'Сообщение удалено' : message.text;
+  const notification = new Notification(title, { body, icon: DEFAULT_AVATAR, tag: `dialog:${message.dialogId}` });
+  notification.onclick = () => {
+    window.focus();
+    notification.close();
+  };
+}
+
+function handleIncomingMessageEffects(message, isCurrentDialog) {
+  if (!currentUser || message.senderId === currentUser.id) return;
+  if (isCurrentDialog && document.hasFocus() && !document.hidden) return;
+  playNotificationSound();
+  showIncomingNotification(message);
 }
 
 function saveDialogAlias(otherUserId, alias) {
@@ -210,7 +281,10 @@ function renderUsers() {
         <div class="user-main-content">
           <div class="user-top">
             <div class="user-name-line">
-              <div class="user-name">${getDisplayName(user)}</div>
+              <div>
+                <div class="user-name">${getDisplayName(user)}</div>
+                <div class="user-nick">${getUserNickname(user)}</div>
+              </div>
             </div>
             <div class="presence ${onlineUserIds.has(user.id) ? 'online' : ''}"></div>
           </div>
@@ -514,11 +588,12 @@ function setupSocket() {
   });
 
   socket.on('private-message', async (message) => {
-    const isCurrentDialog = currentDialogUser && message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':');
+    const isCurrentDialog = Boolean(currentDialogUser && message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':'));
     if (isCurrentDialog) {
       addMessage(message);
       socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
     }
+    handleIncomingMessageEffects(message, isCurrentDialog);
     await loadUsers();
   });
 
@@ -729,6 +804,8 @@ function openProfileModal() {
   profileNameInput.value = currentUser?.name || '';
   profilePhonePreview.textContent = currentUser?.phone || '';
   showPhoneToggle.checked = currentUser?.showPhone !== false;
+  soundNotificationsToggle.checked = currentUser?.soundEnabled !== false;
+  silentModeToggle.checked = currentUser?.silentMode === true;
   profilePreviewAvatar.src = getAvatar(currentUser);
   profilePhotoInput.value = '';
   avatarUploadText.textContent = 'Выбрать аватарку';
@@ -755,7 +832,9 @@ async function saveProfile() {
       body: JSON.stringify({
         userId: currentUser.id,
         name: newName,
-        showPhone: showPhoneToggle.checked
+        showPhone: showPhoneToggle.checked,
+        soundEnabled: soundNotificationsToggle.checked,
+        silentMode: silentModeToggle.checked
       })
     });
     const nameData = await nameResponse.json();
@@ -868,6 +947,23 @@ if (themeSwitcher) {
   });
 }
 
+if (silentModeToggle) {
+  silentModeToggle.addEventListener('change', () => {
+    if (silentModeToggle.checked) {
+      soundNotificationsToggle.checked = false;
+    }
+  });
+}
+
+if (soundNotificationsToggle) {
+  soundNotificationsToggle.addEventListener('change', async () => {
+    if (soundNotificationsToggle.checked) {
+      silentModeToggle.checked = false;
+      await ensureNotificationPermission();
+    }
+  });
+}
+
 blacklistList.addEventListener('click', (event) => {
   const btn = event.target.closest('.blacklist-remove-btn');
   if (!btn) return;
@@ -926,7 +1022,7 @@ window.addEventListener('load', async () => {
   if (!savedUser) return;
 
   try {
-    currentUser = JSON.parse(savedUser);
+    currentUser = { soundEnabled: true, silentMode: false, ...JSON.parse(savedUser) };
     renderCurrentUser();
     showScreen(chatScreen);
     setupSocket();

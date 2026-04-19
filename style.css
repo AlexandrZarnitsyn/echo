@@ -306,6 +306,13 @@ body {
   font-size: 15px;
   font-weight: 700;
   color: #111827;
+  line-height: 1.2;
+}
+
+.user-nick {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 2px;
 }
 
 .user-phone,
@@ -966,6 +973,7 @@ body[data-theme="dark"] .auth {
 body[data-theme="dark"] .brand,
 body[data-theme="dark"] .auth-title,
 body[data-theme="dark"] .header-title,
+body[data-theme="dark"] .user-name,
 body[data-theme="dark"] .modal-title,
 body[data-theme="dark"] .readonly-field,
 body[data-theme="dark"] .blacklist-name,
@@ -978,6 +986,7 @@ body[data-theme="dark"] .auth-subtitle,
 body[data-theme="dark"] .header-subtitle,
 body[data-theme="dark"] .user-preview,
 body[data-theme="dark"] .user-phone,
+body[data-theme="dark"] .user-nick,
 body[data-theme="dark"] .empty-state,
 body[data-theme="dark"] .blacklist-subtitle,
 body[data-theme="dark"] .settings-toggle small,
