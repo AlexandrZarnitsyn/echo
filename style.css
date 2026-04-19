@@ -1692,3 +1692,124 @@ body[data-theme='light'] .user-preview { color:#475569 !important; }
 .media-viewer-close:hover {
   background: rgba(30, 41, 59, 0.96);
 }
+
+
+.sidebar-actions {
+  padding: 0 16px 10px;
+}
+.sidebar-create-btn {
+  width: 100%;
+}
+.group-modal-card {
+  max-width: 460px;
+}
+.group-members-list {
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid rgba(148,163,184,.28);
+  border-radius: 14px;
+  background: rgba(15,23,42,.04);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.group-member-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  background: rgba(255,255,255,.82);
+}
+.group-member-option input {
+  width: 18px;
+  height: 18px;
+}
+.group-member-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.group-member-name {
+  font-weight: 700;
+}
+.group-member-phone {
+  font-size: 12px;
+  opacity: .72;
+}
+.media-viewer-card {
+  position: relative;
+}
+.media-viewer-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  background: rgba(15,23,42,.72);
+  color: #fff;
+  font-size: 30px;
+  z-index: 3;
+}
+.media-viewer-nav.prev { left: 14px; }
+.media-viewer-nav.next { right: 14px; }
+.media-viewer-counter {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  z-index: 3;
+  background: rgba(15,23,42,.72);
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.attachment-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+.attachment-preview-item {
+  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(15,23,42,.06);
+}
+.attachment-preview-item .attachment-preview-media {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  display: block;
+}
+.attachment-preview-badge {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 2;
+  background: rgba(15,23,42,.72);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.message.group .sender {
+  color: #60a5fa;
+}
+.user-card.group-card .user-name::before {
+  content: "👥 ";
+}
+body[data-theme="dark"] .group-members-list {
+  background: rgba(255,255,255,.03);
+  border-color: rgba(148,163,184,.2);
+}
+body[data-theme="dark"] .group-member-option {
+  background: rgba(15,23,42,.68);
+}

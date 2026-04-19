@@ -55,6 +55,9 @@
           <div class="search-box">
             <input id="searchInput" type="text" placeholder="Поиск по номеру телефона" />
           </div>
+          <div class="sidebar-actions">
+            <button class="primary-btn sidebar-create-btn" id="createGroupBtn" type="button">Новая беседа</button>
+          </div>
 
           <div class="user-list" id="userList"></div>
         </aside>
@@ -204,10 +207,34 @@
 
   <div class="media-viewer-backdrop hidden" id="mediaViewerModal">
     <div class="media-viewer-card">
+      <button class="media-viewer-nav prev hidden" id="mediaViewerPrevBtn" type="button" aria-label="Предыдущее">‹</button>
+      <button class="media-viewer-nav next hidden" id="mediaViewerNextBtn" type="button" aria-label="Следующее">›</button>
       <button class="media-viewer-close" id="mediaViewerCloseBtn" type="button" aria-label="Закрыть">×</button>
+      <div class="media-viewer-counter hidden" id="mediaViewerCounter"></div>
       <div class="media-viewer-content" id="mediaViewerContent"></div>
     </div>
   </div>
+
+  <div class="modal-backdrop hidden" id="groupModal">
+    <div class="modal-card group-modal-card">
+      <div class="modal-title">Создать беседу</div>
+      <div class="form-group">
+        <label for="groupNameInput">Название беседы</label>
+        <input id="groupNameInput" type="text" placeholder="Например, Семья или Работа" />
+      </div>
+      <div class="form-group">
+        <label>Участники</label>
+        <div class="group-members-list" id="groupMembersList"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-actions">
+          <button class="ghost-btn" id="cancelGroupBtn" type="button">Отмена</button>
+          <button class="primary-btn" id="saveGroupBtn" type="button">Создать</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/config.js"></script>
   <script src="https://cdn.socket.io/4.8.1/socket.io.min.js" crossorigin="anonymous"></script>
   <script src="/app.js"></script>
