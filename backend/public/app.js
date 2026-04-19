@@ -1674,11 +1674,38 @@ function getDialogsCacheKey() {
   return currentUser ? `messengerDialogsCache:${currentUser.id}` : '';
 }
 
+function applyBootstrapPayload(data = {}, options = {}) {
+  const search = String(options.search ?? searchInput.value.trim()).trim();
+  onlineUserIds = new Set(data.onlineUserIds || []);
+  lastSeenMap = data.lastSeenMap || {};
+  const normalizedGroups = (data.groups || []).filter((group) => !search || getDisplayName(group).toLowerCase().includes(search.toLowerCase()));
+  const normalizedUsers = (data.users || []).map((item) => item.type === 'group' ? item : { ...item, lastSeenAt: lastSeenMap[String(item.id)] || item.lastSeenAt || null });
+  users = [...normalizedGroups, ...normalizedUsers].sort((a, b) => {
+    const at = a.lastMessage?.createdAt ? new Date(a.lastMessage.createdAt).getTime() : 0;
+    const bt = b.lastMessage?.createdAt ? new Date(b.lastMessage.createdAt).getTime() : 0;
+    return bt - at || getDisplayName(a).localeCompare(getDisplayName(b), 'ru');
+  });
+
+  if (currentDialogUser) {
+    const foundCurrent = users.find((user) => user.id === currentDialogUser.id);
+    if (foundCurrent) currentDialogUser = foundCurrent;
+  }
+
+  renderUsers();
+  updateDialogHeader();
+  updateOpenContactProfilePresence();
+}
+
 function saveDialogsCache() {
   const cacheKey = getDialogsCacheKey();
   if (!cacheKey || !Array.isArray(users) || searchInput.value.trim()) return;
   try {
-    localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), users }));
+    localStorage.setItem(cacheKey, JSON.stringify({
+      savedAt: Date.now(),
+      users,
+      onlineUserIds: [...onlineUserIds],
+      lastSeenMap
+    }));
   } catch (_) {}
 }
 
@@ -1692,8 +1719,11 @@ function restoreDialogsCache() {
     const cachedUsers = Array.isArray(parsed?.users) ? parsed.users : [];
     if (!cachedUsers.length) return false;
     users = cachedUsers;
+    onlineUserIds = new Set(parsed?.onlineUserIds || []);
+    lastSeenMap = parsed?.lastSeenMap || {};
     renderUsers();
     updateDialogHeader();
+    updateOpenContactProfilePresence();
     if (currentDialogUser) {
       const foundCurrent = users.find((user) => user.id === currentDialogUser.id);
       if (foundCurrent) currentDialogUser = foundCurrent;
@@ -1704,19 +1734,55 @@ function restoreDialogsCache() {
   }
 }
 
+function normalizeDialogsPayload(groupsPayload, usersPayload, presencePayload) {
+  return {
+    groups: Array.isArray(groupsPayload?.groups) ? groupsPayload.groups : [],
+    users: Array.isArray(usersPayload?.users) ? usersPayload.users : [],
+    onlineUserIds: Array.isArray(presencePayload?.onlineUserIds) ? presencePayload.onlineUserIds : [],
+    lastSeenMap: presencePayload?.lastSeenMap || {}
+  };
+}
+
+async function fetchDialogsBootstrapPayload(search) {
+  const response = await fetch(apiUrl(`/api/dialogs/bootstrap?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`));
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error || 'Не удалось загрузить диалоги');
+  }
+  return data;
+}
+
+async function fetchDialogsFallbackPayload(search) {
+  const [groupsResponse, usersResponse, presenceResponse] = await Promise.all([
+    fetch(apiUrl(`/api/groups?currentUserId=${encodeURIComponent(currentUser.id)}`)),
+    fetch(apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)),
+    fetch(apiUrl('/api/presence'))
+  ]);
+
+  const [groupsData, usersData, presenceData] = await Promise.all([
+    groupsResponse.json().catch(() => ({ groups: [] })),
+    usersResponse.json().catch(() => ({ users: [] })),
+    presenceResponse.json().catch(() => ({ onlineUserIds: [], lastSeenMap: {} }))
+  ]);
+
+  return normalizeDialogsPayload(groupsData, usersData, presenceData);
+}
+
 async function loadUsers() {
   const search = searchInput.value.trim();
-  const [usersResponse, groupsResponse] = await Promise.all([
-    fetch(apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)),
-    fetch(apiUrl(`/api/groups?currentUserId=${encodeURIComponent(currentUser.id)}`))
-  ]);
-  const [data, groupsData] = await Promise.all([usersResponse.json(), groupsResponse.json()]);
-  const groups = (groupsData.groups || []).filter((group) => !search || getDisplayName(group).toLowerCase().includes(search.toLowerCase()));
-  users = [...(groups || []), ...(data.users || [])].sort((a, b) => {
-    const at = a.lastMessage?.createdAt ? new Date(a.lastMessage.createdAt).getTime() : 0;
-    const bt = b.lastMessage?.createdAt ? new Date(b.lastMessage.createdAt).getTime() : 0;
-    return bt - at || getDisplayName(a).localeCompare(getDisplayName(b), 'ru');
-  });
+  let data = null;
+  try {
+    data = await fetchDialogsBootstrapPayload(search);
+    const totalDialogs = (Array.isArray(data?.groups) ? data.groups.length : 0) + (Array.isArray(data?.users) ? data.users.length : 0);
+    const hadCachedDialogs = getDialogsCacheKey() ? Boolean(localStorage.getItem(getDialogsCacheKey())) : false;
+    if (!search && hadCachedDialogs && totalDialogs === 0) {
+      data = await fetchDialogsFallbackPayload(search);
+    }
+  } catch (_) {
+    data = await fetchDialogsFallbackPayload(search);
+  }
+
+  applyBootstrapPayload(data, { search });
   saveDialogsCache();
 
   if (currentDialogUser) {
@@ -1751,6 +1817,8 @@ async function loadPresence() {
   lastSeenMap = data.lastSeenMap || {};
   users = users.map((item) => item.type === 'group' ? item : { ...item, lastSeenAt: lastSeenMap[String(item.id)] || item.lastSeenAt || null });
   renderUsers();
+  updateDialogHeader();
+  updateOpenContactProfilePresence();
 }
 
 function updateDialogHeader() {
@@ -2718,7 +2786,7 @@ async function bootstrapSavedSession() {
     showScreen(chatScreen);
     restoreDialogsCache();
     setupSocket();
-    await Promise.allSettled([loadUsers(), loadPresence()]);
+    await loadUsers();
   } catch {
     localStorage.removeItem('messengerCurrentUser');
   }
