@@ -114,6 +114,154 @@ async function query(sql, params = []) {
 }
 
 
+const ENABLE_STORAGE_CLEANUP = process.env.ENABLE_STORAGE_CLEANUP !== 'false';
+const STORAGE_CLEANUP_INTERVAL_MS = Number(process.env.STORAGE_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
+const STORAGE_CLEANUP_INITIAL_DELAY_MS = Number(process.env.STORAGE_CLEANUP_INITIAL_DELAY_MS || 20 * 1000);
+const STORAGE_CLEANUP_MAX_AGE_HOURS = Number(process.env.STORAGE_CLEANUP_MAX_AGE_HOURS || 24);
+const STORAGE_CLEANUP_DELETE_REFERENCED_LEGACY = process.env.STORAGE_CLEANUP_DELETE_REFERENCED_LEGACY === 'true';
+
+function normalizeUploadUrlToRelativePath(value) {
+  const raw = String(value || '').trim();
+  if (!raw || !raw.startsWith('/uploads/')) return '';
+  const relative = raw.replace(/^\/uploads\//, '').replace(/\\/g, '/');
+  const normalized = path.posix.normalize(relative).replace(/^\/+/, '');
+  if (!normalized || normalized.startsWith('..')) return '';
+  return normalized;
+}
+
+async function collectReferencedLegacyUploadPaths() {
+  const referenced = new Set();
+
+  const addPath = (value) => {
+    const relative = normalizeUploadUrlToRelativePath(value);
+    if (relative) referenced.add(relative);
+  };
+
+  const [messageRows, userRows, groupRows] = await Promise.all([
+    query(`SELECT attachment_url FROM messages WHERE attachment_url LIKE '/uploads/%'`),
+    query(`SELECT photo FROM users WHERE photo LIKE '/uploads/%'`),
+    query(`SELECT photo FROM groups WHERE photo LIKE '/uploads/%'`)
+  ]);
+
+  for (const row of messageRows.rows) addPath(row.attachment_url);
+  for (const row of userRows.rows) addPath(row.photo);
+  for (const row of groupRows.rows) addPath(row.photo);
+
+  return referenced;
+}
+
+async function getDirectorySizeBytes(dirPath) {
+  let total = 0;
+  try {
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        total += await getDirectorySizeBytes(fullPath);
+      } else if (entry.isFile()) {
+        const stat = await fs.promises.stat(fullPath).catch(() => null);
+        if (stat) total += Number(stat.size || 0);
+      }
+    }
+  } catch (_error) {
+    return total;
+  }
+  return total;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let unit = -1;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(size >= 10 || unit <= 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+async function deleteFileIfSafe(filePath) {
+  try {
+    await fs.promises.unlink(filePath);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function cleanupLegacyUploadsOnce() {
+  if (!ENABLE_STORAGE_CLEANUP) return;
+  const startedAt = Date.now();
+  const maxAgeMs = Math.max(1, STORAGE_CLEANUP_MAX_AGE_HOURS) * 60 * 60 * 1000;
+  const referenced = await collectReferencedLegacyUploadPaths();
+  const beforeBytes = await getDirectorySizeBytes(UPLOADS_DIR);
+  let deletedFiles = 0;
+  let deletedBytes = 0;
+  let keptReferenced = 0;
+  let keptFresh = 0;
+
+  async function walk(dirPath, prefix = '') {
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name === '.gitkeep') continue;
+      const fullPath = path.join(dirPath, entry.name);
+      const relativePath = path.posix.join(prefix, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath, relativePath);
+        const remaining = await fs.promises.readdir(fullPath).catch(() => []);
+        if (!remaining.length) {
+          await fs.promises.rmdir(fullPath).catch(() => null);
+        }
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const stat = await fs.promises.stat(fullPath).catch(() => null);
+      if (!stat) continue;
+      const ageMs = Date.now() - Number(stat.mtimeMs || stat.ctimeMs || Date.now());
+      const isReferenced = referenced.has(relativePath);
+      if (isReferenced && !STORAGE_CLEANUP_DELETE_REFERENCED_LEGACY) {
+        keptReferenced += 1;
+        continue;
+      }
+      if (ageMs < maxAgeMs) {
+        keptFresh += 1;
+        continue;
+      }
+      const removed = await deleteFileIfSafe(fullPath);
+      if (removed) {
+        deletedFiles += 1;
+        deletedBytes += Number(stat.size || 0);
+      }
+    }
+  }
+
+  await walk(UPLOADS_DIR, '');
+  const afterBytes = await getDirectorySizeBytes(UPLOADS_DIR);
+  console.log(
+    `[storage-cleanup] uploads before=${formatBytes(beforeBytes)} after=${formatBytes(afterBytes)} deletedFiles=${deletedFiles} deletedBytes=${formatBytes(deletedBytes)} keptReferenced=${keptReferenced} keptFresh=${keptFresh} durationMs=${Date.now() - startedAt}`
+  );
+}
+
+function scheduleStorageCleanup() {
+  if (!ENABLE_STORAGE_CLEANUP) {
+    console.log('[storage-cleanup] disabled');
+    return;
+  }
+  const run = async () => {
+    try {
+      await cleanupLegacyUploadsOnce();
+    } catch (error) {
+      console.error('[storage-cleanup] error', error);
+    }
+  };
+  setTimeout(run, Math.max(0, STORAGE_CLEANUP_INITIAL_DELAY_MS));
+  setInterval(run, Math.max(60 * 1000, STORAGE_CLEANUP_INTERVAL_MS));
+  console.log(`[storage-cleanup] scheduled interval=${STORAGE_CLEANUP_INTERVAL_MS}ms maxAgeHours=${STORAGE_CLEANUP_MAX_AGE_HOURS} deleteReferencedLegacy=${STORAGE_CLEANUP_DELETE_REFERENCED_LEGACY}`);
+}
+
+
 const dialogsBootstrapCache = new Map();
 const DIALOGS_BOOTSTRAP_TTL_MS = Number(process.env.DIALOGS_BOOTSTRAP_TTL_MS || 15000);
 
@@ -1750,6 +1898,7 @@ app.use((error, req, res, next) => {
 (async () => {
   try {
     await initDatabase();
+    scheduleStorageCleanup();
     server.listen(PORT, () => {
       console.log(`Server started on http://localhost:${PORT}`);
     });
