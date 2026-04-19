@@ -95,6 +95,25 @@ function apiUrl(path) {
   return `${API_BASE_URL}${path}`;
 }
 
+async function parseApiResponse(response) {
+  const rawText = await response.text();
+  let data = null;
+  if (rawText) {
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      data = null;
+    }
+  }
+  if (!response.ok) {
+    const message = data?.error || (rawText && !/^<!DOCTYPE/i.test(rawText) ? rawText : '') || `Ошибка сервера (${response.status})`;
+    throw new Error(message);
+  }
+  if (data) return data;
+  if (!rawText) return {};
+  throw new Error('Сервер вернул неожиданный ответ');
+}
+
 
 let mode = 'register';
 let currentUser = null;
@@ -131,6 +150,8 @@ let recordingAnalyserData = null;
 let recordingAudioContext = null;
 let recordingSourceNode = null;
 let recordingDragState = null;
+let isFinishingVoiceRecording = false;
+let isSubmittingTextMessage = false;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -581,6 +602,8 @@ async function sendPendingAttachment() {
   if (!pendingAttachments.length || !currentDialogUser || !currentDialogState.canMessage || isUploadingAttachment) return;
   isUploadingAttachment = true;
   if (attachmentSendBtn) attachmentSendBtn.disabled = true;
+  if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
   const caption = (attachmentCaptionInput?.value || '').trim();
 
   try {
@@ -597,15 +620,17 @@ async function sendPendingAttachment() {
         method: 'POST',
         body: formData
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Не удалось отправить файл');
+      await parseApiResponse(response);
     }
     messageInput.value = '';
     closeAttachmentModal();
   } catch (error) {
-    alert(error.message);
+    alert(error.message || 'Не удалось отправить файл');
     isUploadingAttachment = false;
     if (attachmentSendBtn) attachmentSendBtn.disabled = false;
+  } finally {
+    if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
+    if (sendBtn) sendBtn.disabled = !currentDialogState.canMessage;
   }
 }
 
@@ -1007,13 +1032,19 @@ async function markVoiceMessageListened(messageId) {
 }
 
 async function finishVoiceRecording({ cancel = false, send = false } = {}) {
+  if (isFinishingVoiceRecording) {
+    if (send && !cancel) pendingVoiceSendOnStop = true;
+    return;
+  }
   pendingVoiceSendOnStop = Boolean(send && !cancel);
   if (!isRecordingVoice) {
     pendingVoiceSendOnStop = false;
     return;
   }
+  isFinishingVoiceRecording = true;
   if (cancel) recordedChunks = [];
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  else isFinishingVoiceRecording = false;
 }
 
 function formatAudioTime(totalSeconds) {
@@ -1594,6 +1625,7 @@ async function toggleVoiceRecording() {
       const shouldSend = pendingVoiceSendOnStop;
       pendingVoiceSendOnStop = false;
       isRecordingVoice = false;
+      isFinishingVoiceRecording = false;
       stopVoiceRecordingVisualization();
       mediaRecorderStream?.getTracks?.().forEach((track) => track.stop());
       mediaRecorderStream = null;
@@ -1678,7 +1710,7 @@ function logout() {
 
 async function submitMessage() {
   const text = messageInput.value.trim();
-  if (!currentDialogUser || !currentDialogState.canMessage) return;
+  if (!currentDialogUser || !currentDialogState.canMessage || isSubmittingTextMessage) return;
 
   if (editingMessageId) {
     if (!text) return;
@@ -1710,10 +1742,22 @@ async function submitMessage() {
   }
 
   if (!text || !socket) return;
-  if (currentDialogUser.type === 'group') socket.emit('send-group-message', { text, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '') });
-  else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
-  messageInput.value = '';
-  messageInput.focus();
+  isSubmittingTextMessage = true;
+  if (sendBtn) sendBtn.disabled = true;
+  try {
+    if (currentDialogUser.type === 'group') socket.emit('send-group-message', { text, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '') });
+    else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
+    messageInput.value = '';
+    messageInput.focus();
+    setTimeout(() => {
+      isSubmittingTextMessage = false;
+      if (sendBtn) sendBtn.disabled = !currentDialogState.canMessage;
+    }, 350);
+  } catch (error) {
+    isSubmittingTextMessage = false;
+    if (sendBtn) sendBtn.disabled = !currentDialogState.canMessage;
+    throw error;
+  }
 }
 
 async function deleteMessage(messageId) {

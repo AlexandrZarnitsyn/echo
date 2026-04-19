@@ -290,6 +290,19 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
+app.use((error, req, res, next) => {
+  if (!error) return next();
+  console.error('server middleware error', error);
+  if (res.headersSent) return next(error);
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'Файл слишком большой. Максимум 100 МБ' });
+    }
+    return res.status(400).json({ error: 'Ошибка загрузки файла' });
+  }
+  return res.status(500).json({ error: error.message || 'Внутренняя ошибка сервера' });
+});
+
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -1123,19 +1136,6 @@ io.on('connection', (socket) => {
 
 app.get('/api/presence', (_req, res) => {
   res.json({ onlineUserIds: [...onlineUsers.keys()] });
-});
-
-app.use((error, req, res, next) => {
-  if (!error) return next();
-  console.error('server middleware error', error);
-  if (res.headersSent) return next(error);
-  if (error instanceof multer.MulterError) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'Файл слишком большой. Максимум 100 МБ' });
-    }
-    return res.status(400).json({ error: 'Ошибка загрузки файла' });
-  }
-  return res.status(500).json({ error: error.message || 'Внутренняя ошибка сервера' });
 });
 
 (async () => {
