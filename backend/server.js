@@ -828,8 +828,7 @@ app.get('/api/media/:mediaId', async (req, res) => {
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     if (media.original_name) {
-      const safeName = String(media.original_name).replace(/[
-"]/g, '_');
+      const safeName = String(media.original_name).replace(/[\r\n"]/g, '_');
       res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
     }
 
