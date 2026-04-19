@@ -344,6 +344,39 @@ async function initDatabase() {
     );
   `);
 
+  const userBlocksColumnsResult = await query(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'user_blocks'
+  `);
+  const userBlocksColumns = new Set(userBlocksColumnsResult.rows.map((row) => String(row.column_name)));
+
+  async function renameLegacyUserBlocksColumn(legacyNames, targetName) {
+    if (userBlocksColumns.has(targetName)) return;
+    const legacyName = legacyNames.find((name) => userBlocksColumns.has(name));
+    if (legacyName) {
+      await query(`ALTER TABLE user_blocks RENAME COLUMN "${legacyName}" TO "${targetName}"`);
+      userBlocksColumns.delete(legacyName);
+      userBlocksColumns.add(targetName);
+      return;
+    }
+    await query(`ALTER TABLE user_blocks ADD COLUMN IF NOT EXISTS "${targetName}" TEXT`);
+    userBlocksColumns.add(targetName);
+  }
+
+  await renameLegacyUserBlocksColumn(['blocker_phone', 'user_id', 'owner_id', 'blocker'], 'blocker_id');
+  await renameLegacyUserBlocksColumn(['blocked_phone', 'target_user_id', 'blocked_user_id', 'blocked'], 'blocked_id');
+
+  if (!userBlocksColumns.has('created_at')) {
+    await query(`ALTER TABLE user_blocks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+    userBlocksColumns.add('created_at');
+  }
+
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS user_blocks_blocker_blocked_uidx ON user_blocks(blocker_id, blocked_id)`);
+  await query(`CREATE INDEX IF NOT EXISTS user_blocks_blocker_idx ON user_blocks(blocker_id)`);
+  await query(`CREATE INDEX IF NOT EXISTS user_blocks_blocked_idx ON user_blocks(blocked_id)`);
+
+
   await query(`
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,

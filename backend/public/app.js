@@ -1734,54 +1734,10 @@ function restoreDialogsCache() {
   }
 }
 
-function normalizeDialogsPayload(groupsPayload, usersPayload, presencePayload) {
-  return {
-    groups: Array.isArray(groupsPayload?.groups) ? groupsPayload.groups : [],
-    users: Array.isArray(usersPayload?.users) ? usersPayload.users : [],
-    onlineUserIds: Array.isArray(presencePayload?.onlineUserIds) ? presencePayload.onlineUserIds : [],
-    lastSeenMap: presencePayload?.lastSeenMap || {}
-  };
-}
-
-async function fetchDialogsBootstrapPayload(search) {
-  const response = await fetch(apiUrl(`/api/dialogs/bootstrap?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`));
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data?.error || 'Не удалось загрузить диалоги');
-  }
-  return data;
-}
-
-async function fetchDialogsFallbackPayload(search) {
-  const [groupsResponse, usersResponse, presenceResponse] = await Promise.all([
-    fetch(apiUrl(`/api/groups?currentUserId=${encodeURIComponent(currentUser.id)}`)),
-    fetch(apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)),
-    fetch(apiUrl('/api/presence'))
-  ]);
-
-  const [groupsData, usersData, presenceData] = await Promise.all([
-    groupsResponse.json().catch(() => ({ groups: [] })),
-    usersResponse.json().catch(() => ({ users: [] })),
-    presenceResponse.json().catch(() => ({ onlineUserIds: [], lastSeenMap: {} }))
-  ]);
-
-  return normalizeDialogsPayload(groupsData, usersData, presenceData);
-}
-
 async function loadUsers() {
   const search = searchInput.value.trim();
-  let data = null;
-  try {
-    data = await fetchDialogsBootstrapPayload(search);
-    const totalDialogs = (Array.isArray(data?.groups) ? data.groups.length : 0) + (Array.isArray(data?.users) ? data.users.length : 0);
-    const hadCachedDialogs = getDialogsCacheKey() ? Boolean(localStorage.getItem(getDialogsCacheKey())) : false;
-    if (!search && hadCachedDialogs && totalDialogs === 0) {
-      data = await fetchDialogsFallbackPayload(search);
-    }
-  } catch (_) {
-    data = await fetchDialogsFallbackPayload(search);
-  }
-
+  const response = await fetch(apiUrl(`/api/dialogs/bootstrap?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`));
+  const data = await response.json();
   applyBootstrapPayload(data, { search });
   saveDialogsCache();
 
