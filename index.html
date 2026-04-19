@@ -215,6 +215,10 @@
       </div>
       <div class="contact-profile-name" id="contactProfileName">Пользователь</div>
       <div class="contact-profile-status" id="contactProfileStatus">Не в сети</div>
+      <div class="contact-profile-actions hidden" id="contactProfileActions">
+        <button class="ghost-btn" id="changeGroupPhotoBtn" type="button">Установить фото беседы</button>
+        <input id="groupPhotoInput" type="file" accept="image/*" hidden />
+      </div>
 
       <div class="contact-profile-grid">
         <div class="contact-profile-field">
@@ -236,6 +240,10 @@
         <div class="contact-profile-field">
           <span class="contact-profile-label">Дата регистрации</span>
           <div class="readonly-field" id="contactProfileCreatedAt"></div>
+        </div>
+        <div class="contact-profile-field">
+          <span class="contact-profile-label">Последний раз в сети</span>
+          <div class="readonly-field" id="contactProfileLastSeen"></div>
         </div>
       </div>
 

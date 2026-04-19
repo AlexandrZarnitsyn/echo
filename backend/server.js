@@ -61,7 +61,8 @@ function mapUserRow(row) {
     password: row.password,
     photo: row.photo || '',
     showPhone: row.show_phone !== false,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at || null
   };
 }
 
@@ -103,6 +104,7 @@ function publicUser(user, viewerId = null, blockedUserIds = []) {
     phoneHidden: !isSelf && !user.showPhone,
     showPhone: user.showPhone,
     photo: user.photo || '',
+    lastSeenAt: user.lastSeenAt || null,
     blockedUserIds: isSelf ? blockedUserIds.map(String) : undefined
   };
 }
@@ -120,7 +122,8 @@ async function initDatabase() {
       password TEXT NOT NULL,
       photo TEXT NOT NULL DEFAULT '',
       show_phone BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NULL
     );
   `);
 
@@ -176,6 +179,7 @@ async function initDatabase() {
   `);
 
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS group_id TEXT NULL REFERENCES groups(id) ON DELETE CASCADE;`);
+  await query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS photo TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT NOT NULL DEFAULT '';`);
@@ -743,7 +747,7 @@ app.get('/api/groups', async (req, res) => {
       rawId: row.id,
       type: 'group',
       name: row.name,
-      photo: '',
+      photo: row.photo || '',
       memberIds: row.member_ids || [],
       hasDialog: true,
       canMessage: true,
@@ -809,7 +813,7 @@ app.post('/api/groups', async (req, res) => {
     if (invalidMemberId) return res.status(400).json({ error: 'Можно добавить только пользователей, с которыми у вас уже есть диалог' });
 
     const groupId = crypto.randomUUID();
-    await query('INSERT INTO groups (id, name, created_by) VALUES ($1, $2, $3)', [groupId, name, currentUserId]);
+    await query('INSERT INTO groups (id, name, created_by, photo) VALUES ($1, $2, $3, $4)', [groupId, name, currentUserId, '']);
     for (const userId of uniqueMemberIds) {
       await query('INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [groupId, userId]);
       await query('INSERT INTO group_read_state (group_id, user_id, last_read_at) VALUES ($1, $2, NOW()) ON CONFLICT (group_id, user_id) DO NOTHING', [groupId, userId]);
@@ -821,7 +825,7 @@ app.post('/api/groups', async (req, res) => {
       rawId: group.id,
       type: 'group',
       name: group.name,
-      photo: '',
+      photo: group.photo || '',
       memberIds: uniqueMemberIds,
       hasDialog: true,
       canMessage: true,
@@ -878,6 +882,51 @@ app.post('/api/groups/:groupId/members', async (req, res) => {
   } catch (error) {
     console.error('group add members error', error);
     res.status(500).json({ error: 'Не удалось добавить участников' });
+  }
+});
+
+
+app.post('/api/groups/:groupId/photo', memoryUpload.single('photo'), async (req, res) => {
+  try {
+    const currentUserId = String(req.body?.currentUserId || '');
+    const groupId = String(req.params.groupId || '');
+    const file = req.file;
+    if (!currentUserId || !groupId) return res.status(400).json({ error: 'Не выбрана беседа' });
+    if (!file) return res.status(400).json({ error: 'Фото не загружено' });
+    if (!String(file.mimetype || '').startsWith('image/')) return res.status(400).json({ error: 'Для фото беседы можно выбрать только изображение' });
+
+    const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, currentUserId]);
+    if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
+
+    const mediaId = crypto.randomUUID();
+    await query(
+      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [mediaId, currentUserId, String(file.mimetype || 'application/octet-stream'), String(file.originalname || ''), Number(file.size || 0), file.buffer]
+    );
+
+    const photoUrl = `/api/media/${mediaId}`;
+    await query('UPDATE groups SET photo = $2 WHERE id = $1', [groupId, photoUrl]);
+
+    const group = await getGroupById(groupId);
+    const memberIds = await getGroupMemberIds(groupId);
+    const payload = {
+      id: `group:${group.id}`,
+      rawId: group.id,
+      type: 'group',
+      name: group.name,
+      photo: group.photo || '',
+      memberIds,
+      hasDialog: true,
+      canMessage: true,
+      unreadCount: 0,
+      lastMessage: null
+    };
+    memberIds.forEach((userId) => io.to(`user:${userId}`).emit('group:updated', payload));
+    res.json({ group: payload });
+  } catch (error) {
+    console.error('group photo upload error', error);
+    res.status(500).json({ error: 'Не удалось обновить фото беседы' });
   }
 });
 
@@ -1367,8 +1416,8 @@ app.post('/api/messages/:messageId/avatar-suggestion-response', async (req, res)
 
 const onlineUsers = new Map();
 
-function emitPresence(userId, isOnline) {
-  io.emit('presence:update', { userId, isOnline });
+function emitPresence(userId, isOnline, lastSeenAt = null) {
+  io.emit('presence:update', { userId, isOnline, lastSeenAt });
 }
 
 io.on('connection', (socket) => {
@@ -1384,7 +1433,8 @@ io.on('connection', (socket) => {
 
       const count = onlineUsers.get(user.id) || 0;
       onlineUsers.set(user.id, count + 1);
-      emitPresence(user.id, true);
+      await query('UPDATE users SET last_seen_at = NULL WHERE id = $1', [String(user.id)]).catch(() => null);
+      emitPresence(user.id, true, null);
 
       const delivered = await query(
         `UPDATE messages
@@ -1519,15 +1569,19 @@ io.on('connection', (socket) => {
     const count = onlineUsers.get(activeUser.id) || 0;
     if (count <= 1) {
       onlineUsers.delete(activeUser.id);
-      emitPresence(activeUser.id, false);
+      const lastSeenAt = new Date().toISOString();
+      query('UPDATE users SET last_seen_at = $2 WHERE id = $1', [String(activeUser.id), lastSeenAt]).catch(() => null);
+      emitPresence(activeUser.id, false, lastSeenAt);
     } else {
       onlineUsers.set(activeUser.id, count - 1);
     }
   });
 });
 
-app.get('/api/presence', (_req, res) => {
-  res.json({ onlineUserIds: [...onlineUsers.keys()] });
+app.get('/api/presence', async (_req, res) => {
+  const result = await query('SELECT id, last_seen_at FROM users');
+  const lastSeenMap = Object.fromEntries(result.rows.map((row) => [String(row.id), row.last_seen_at || null]));
+  res.json({ onlineUserIds: [...onlineUsers.keys()], lastSeenMap });
 });
 
 app.use((error, req, res, next) => {

@@ -2465,6 +2465,17 @@ body[data-theme='light'] .avatar-suggestion-status {
   margin-bottom: 18px;
 }
 
+.contact-profile-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.contact-profile-preview .contact-profile-avatar {
+  cursor: zoom-in;
+}
+
+
 .contact-profile-grid {
   display: grid;
   gap: 12px;

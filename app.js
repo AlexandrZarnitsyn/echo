@@ -67,6 +67,10 @@ const contactProfilePhone = document.getElementById('contactProfilePhone');
 const contactProfileId = document.getElementById('contactProfileId');
 const contactProfileDialogType = document.getElementById('contactProfileDialogType');
 const contactProfileCreatedAt = document.getElementById('contactProfileCreatedAt');
+const contactProfileLastSeen = document.getElementById('contactProfileLastSeen');
+const contactProfileActions = document.getElementById('contactProfileActions');
+const changeGroupPhotoBtn = document.getElementById('changeGroupPhotoBtn');
+const groupPhotoInput = document.getElementById('groupPhotoInput');
 const closeContactProfileBtn = document.getElementById('closeContactProfileBtn');
 const closeProfileBtn = document.getElementById('closeProfileBtn');
 const saveProfileBtn = document.getElementById('saveProfileBtn');
@@ -183,6 +187,7 @@ let mode = 'register';
 let currentUser = null;
 let currentDialogUser = null;
 let currentDialogProfile = null;
+let lastSeenMap = {};
 let users = [];
 let onlineUserIds = new Set();
 let socket = null;
@@ -388,11 +393,13 @@ async function openContactProfile() {
       const count = Array.isArray(currentDialogUser.memberIds) ? currentDialogUser.memberIds.length : 0;
       contactProfileStatus.textContent = count ? `Участников: ${count}` : 'Групповая беседа';
     }
+    contactProfileActions?.classList.remove('hidden');
     if (contactProfileNameField) contactProfileNameField.textContent = currentDialogUser.name || '—';
     if (contactProfilePhone) contactProfilePhone.textContent = '—';
     if (contactProfileId) contactProfileId.textContent = currentDialogUser.rawId || String(currentDialogUser.id || '').replace(/^group:/, '') || '—';
     if (contactProfileDialogType) contactProfileDialogType.textContent = 'Групповая беседа';
     if (contactProfileCreatedAt) contactProfileCreatedAt.textContent = formatContactProfileDate(currentDialogUser.createdAt);
+    if (contactProfileLastSeen) contactProfileLastSeen.textContent = '—';
     contactProfileModal.classList.remove('hidden');
     return;
   }
@@ -421,12 +428,14 @@ async function openContactProfile() {
       };
     }
     if (contactProfileName) contactProfileName.textContent = getDisplayName(profileUser) || profileUser.name || 'Пользователь';
-    if (contactProfileStatus) contactProfileStatus.textContent = onlineUserIds.has(profileUser.id) ? 'Онлайн' : 'Не в сети';
+    if (contactProfileStatus) contactProfileStatus.textContent = getPresenceText(profileUser);
+    contactProfileActions?.classList.add('hidden');
     if (contactProfileNameField) contactProfileNameField.textContent = profileUser.name || '—';
     if (contactProfilePhone) contactProfilePhone.textContent = profileUser.phone || 'Номер скрыт';
     if (contactProfileId) contactProfileId.textContent = profileUser.id || '—';
     if (contactProfileDialogType) contactProfileDialogType.textContent = 'Личный диалог';
     if (contactProfileCreatedAt) contactProfileCreatedAt.textContent = formatContactProfileDate(profileUser.createdAt);
+    if (contactProfileLastSeen) contactProfileLastSeen.textContent = onlineUserIds.has(profileUser.id) ? 'Сейчас в сети' : formatLastSeen(profileUser.lastSeenAt || lastSeenMap[String(profileUser.id)] || null);
 
     contactProfileModal.classList.remove('hidden');
   } catch (error) {
@@ -1642,6 +1651,8 @@ async function loadPresence() {
   const response = await fetch(apiUrl('/api/presence'));
   const data = await response.json();
   onlineUserIds = new Set(data.onlineUserIds || []);
+  lastSeenMap = data.lastSeenMap || {};
+  users = users.map((item) => item.type === 'group' ? item : { ...item, lastSeenAt: lastSeenMap[String(item.id)] || item.lastSeenAt || null });
   renderUsers();
 }
 
@@ -1666,7 +1677,7 @@ function updateDialogHeader() {
     dialogSubtitle.textContent = count > 0 ? `${count} участников` : 'Групповая беседа';
   } else {
     const phoneText = currentDialogUser.phone ? currentDialogUser.phone : 'Номер скрыт';
-    dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id) ? `${phoneText} · онлайн` : phoneText;
+    dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id) ? `${phoneText} · онлайн` : `${phoneText} · был(а) в сети ${formatLastSeen(currentDialogUser.lastSeenAt || lastSeenMap[String(currentDialogUser.id)] || null)}`;
   }
   backToDialogsBtn.classList.remove('hidden');
 }
@@ -1742,11 +1753,23 @@ function setupSocket() {
     socket.emit('join-user', currentUser);
   });
 
-  socket.on('presence:update', ({ userId, isOnline }) => {
-    if (isOnline) onlineUserIds.add(userId);
-    else onlineUserIds.delete(userId);
+  socket.on('presence:update', ({ userId, isOnline, lastSeenAt }) => {
+    if (isOnline) {
+      onlineUserIds.add(userId);
+      lastSeenMap[String(userId)] = null;
+    } else {
+      onlineUserIds.delete(userId);
+      lastSeenMap[String(userId)] = lastSeenAt || new Date().toISOString();
+    }
+    users = users.map((item) => item.type === 'group' ? item : (String(item.id) === String(userId) ? { ...item, lastSeenAt: lastSeenMap[String(userId)] || null } : item));
+    if (currentDialogUser && String(currentDialogUser.id) === String(userId)) currentDialogUser = { ...currentDialogUser, lastSeenAt: lastSeenMap[String(userId)] || null };
+    if (currentDialogProfile && String(currentDialogProfile.id) === String(userId)) currentDialogProfile = { ...currentDialogProfile, lastSeenAt: lastSeenMap[String(userId)] || null };
     renderUsers();
     updateDialogHeader();
+    if (!contactProfileModal.classList.contains('hidden') && currentDialogProfile && String(currentDialogProfile.id) === String(userId)) {
+      if (contactProfileStatus) contactProfileStatus.textContent = getPresenceText(currentDialogProfile);
+      if (contactProfileLastSeen) contactProfileLastSeen.textContent = isOnline ? 'Сейчас в сети' : formatLastSeen(lastSeenMap[String(userId)] || null);
+    }
   });
 
   socket.on('private-message', async (message) => {
@@ -2432,8 +2455,54 @@ if (contactProfileAvatar) {
     const profileUser = currentDialogProfile || currentDialogUser;
     if (!profileUser) return;
     const avatar = getAvatar(profileUser) || DEFAULT_AVATAR;
-    openMediaViewer(avatar, 'image', `${getDisplayName(profileUser)} — аватарка`);
+    mediaViewerItems = [{ url: avatar, type: 'image', name: `${getDisplayName(profileUser)} — аватарка` }];
+    mediaViewerIndex = 0;
+    renderMediaViewerItem();
+    mediaViewerModal.classList.remove('hidden');
   });
+}
+
+if (changeGroupPhotoBtn) {
+  changeGroupPhotoBtn.addEventListener('click', () => groupPhotoInput?.click());
+}
+
+if (groupPhotoInput) {
+  groupPhotoInput.addEventListener('change', async () => {
+    const file = groupPhotoInput.files?.[0];
+    if (!file) return;
+    try {
+      await uploadGroupPhoto(file);
+    } catch (error) {
+      alert(error.message || 'Не удалось обновить фото беседы');
+    } finally {
+      groupPhotoInput.value = '';
+    }
+  });
+}
+
+
+async function uploadGroupPhoto(file) {
+  if (!file || !currentDialogUser || currentDialogUser.type !== 'group') return;
+  const formData = new FormData();
+  formData.append('currentUserId', currentUser.id);
+  formData.append('photo', file);
+  const response = await fetch(apiUrl(`/api/groups/${encodeURIComponent(currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''))}/photo`), {
+    method: 'POST',
+    body: formData
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Не удалось обновить фото беседы');
+  if (data.group) {
+    users = users.map((item) => item.id === data.group.id ? { ...item, ...data.group } : item);
+    currentDialogUser = { ...currentDialogUser, ...data.group };
+    currentDialogProfile = { ...(currentDialogProfile || currentDialogUser), ...data.group };
+    updateDialogHeader();
+    renderUsers();
+    if (contactProfileAvatar) {
+      contactProfileAvatar.src = getAvatar(currentDialogUser) || DEFAULT_AVATAR;
+      contactProfileAvatar.onerror = () => { contactProfileAvatar.onerror = null; contactProfileAvatar.src = DEFAULT_AVATAR; };
+    }
+  }
 }
 
 settingsTabs.forEach((tab) => {
