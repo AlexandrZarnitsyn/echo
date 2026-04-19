@@ -1,7 +1,6 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
-const fs = require('fs');
 const cors = require('cors');
 const multer = require('multer');
 const crypto = require('crypto');
@@ -371,18 +370,6 @@ async function enrichAndBroadcastMessageStatus(changedRows) {
   }
 }
 
-const diskStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || '').toLowerCase() || '.png';
-    const prefix = file.mimetype && file.mimetype.startsWith('video/') ? 'video' : (file.mimetype && file.mimetype.startsWith('image/') ? 'image' : 'file');
-    cb(null, `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-  }
-});
-const diskUpload = multer({
-  storage: diskStorage,
-  limits: { fileSize: 100 * 1024 * 1024 }
-});
 const memoryUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 }
@@ -394,7 +381,9 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-app.use('/uploads', express.static(UPLOADS_DIR));
+// Legacy compatibility for old files that were already saved on disk before the DB migration.
+// No new uploads are written there anymore.
+app.use('/uploads', express.static(UPLOADS_DIR, { fallthrough: true }));
 app.get('/api/media/:mediaId', async (req, res) => {
   try {
     const mediaId = String(req.params.mediaId || '');
@@ -416,6 +405,8 @@ app.get('/api/media/:mediaId', async (req, res) => {
   }
 });
 app.use(express.static(path.join(__dirname, 'public')));
+
+console.log('[media] New uploads use PostgreSQL storage; local /uploads is legacy read-only compatibility.');
 
 app.post('/api/register', async (req, res) => {
   try {
