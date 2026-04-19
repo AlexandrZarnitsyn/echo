@@ -498,6 +498,11 @@ async function initDatabase() {
     );
   `);
 
+  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo TEXT NOT NULL DEFAULT ''`);
+  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_phone BOOLEAN NOT NULL DEFAULT TRUE`);
+  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NULL`);
+
   await query(`
     CREATE TABLE IF NOT EXISTS user_blocks (
       blocker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
