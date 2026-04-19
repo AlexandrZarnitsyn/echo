@@ -82,7 +82,7 @@ function mapMessageRow(row) {
     readAt: row.read_at,
     editedAt: row.edited_at,
     deletedAt: row.deleted_at,
-    attachmentUrl: row.attachment_url || '',
+    attachmentUrl: row.attachment_url || (row.media_id ? `/api/media/${row.media_id}` : ''),
     attachmentType: row.attachment_type || '',
     attachmentName: row.attachment_name || '',
     groupId: row.group_id || '',
@@ -177,6 +177,20 @@ async function initDatabase() {
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT NOT NULL DEFAULT '';`);
+  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_message_id TEXT NULL;`);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS media_files (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NULL REFERENCES users(id) ON DELETE SET NULL,
+      mime_type TEXT NOT NULL,
+      original_name TEXT NOT NULL DEFAULT '',
+      size_bytes BIGINT NOT NULL DEFAULT 0,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_id TEXT NULL REFERENCES media_files(id) ON DELETE SET NULL;`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS message_audio_plays (
@@ -190,6 +204,7 @@ async function initDatabase() {
   await query('CREATE INDEX IF NOT EXISTS idx_messages_dialog_id_created_at ON messages(dialog_id, created_at DESC);');
   await query('CREATE INDEX IF NOT EXISTS idx_messages_recipient_unread ON messages(recipient_id, read_at, deleted_at);');
   await query('CREATE INDEX IF NOT EXISTS idx_messages_group_created_at ON messages(group_id, created_at DESC);');
+  await query('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_dedupe ON messages(sender_id, dialog_id, client_message_id) WHERE client_message_id IS NOT NULL');
 }
 
 async function getUserById(userId) {
@@ -271,7 +286,7 @@ async function enrichAndBroadcastMessageStatus(changedRows) {
   }
 }
 
-const storage = multer.diskStorage({
+const diskStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase() || '.png';
@@ -279,8 +294,12 @@ const storage = multer.diskStorage({
     cb(null, `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
   }
 });
-const upload = multer({
-  storage,
+const diskUpload = multer({
+  storage: diskStorage,
+  limits: { fileSize: 100 * 1024 * 1024 }
+});
+const memoryUpload = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 }
 });
 
@@ -291,6 +310,26 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 
 app.use('/uploads', express.static(UPLOADS_DIR));
+app.get('/api/media/:mediaId', async (req, res) => {
+  try {
+    const mediaId = String(req.params.mediaId || '');
+    if (!mediaId) return res.status(400).json({ error: 'Не указан файл' });
+    const result = await query('SELECT mime_type, original_name, data, size_bytes FROM media_files WHERE id = $1 LIMIT 1', [mediaId]);
+    const media = result.rows[0];
+    if (!media) return res.status(404).json({ error: 'Файл не найден' });
+    res.setHeader('Content-Type', media.mime_type || 'application/octet-stream');
+    res.setHeader('Content-Length', String(media.size_bytes || (media.data ? media.data.length : 0)));
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    if (media.original_name) {
+      const safeName = String(media.original_name).replace(/[\r\n"]/g, '_');
+      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    }
+    return res.end(media.data);
+  } catch (error) {
+    console.error('media read error', error);
+    return res.status(500).json({ error: 'Не удалось получить файл' });
+  }
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.post('/api/register', async (req, res) => {
@@ -377,7 +416,7 @@ app.put('/api/profile', async (req, res) => {
   }
 });
 
-app.post('/api/profile/photo', upload.single('photo'), async (req, res) => {
+app.post('/api/profile/photo', diskUpload.single('photo'), async (req, res) => {
   try {
     const userId = String(req.body.userId || '');
     const existing = await getUserById(userId);
@@ -900,12 +939,13 @@ app.delete('/api/messages/:messageId', async (req, res) => {
 });
 
 
-app.post('/api/messages/upload', upload.single('file'), async (req, res) => {
+app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) => {
   try {
     const senderId = String(req.body?.currentUserId || '');
     const recipientId = String(req.body?.recipientId || '');
     const groupId = String(req.body?.groupId || '');
     const text = String(req.body?.text || '').trim();
+    const clientMessageId = String(req.body?.clientMessageId || '').trim() || null;
     const file = req.file;
 
     if (!senderId || (!recipientId && !groupId)) {
@@ -953,22 +993,50 @@ app.post('/api/messages/upload', upload.single('file'), async (req, res) => {
     }
 
     const messageId = crypto.randomUUID();
+    const mediaId = crypto.randomUUID();
     const attachmentType = /^image\//.test(file.mimetype) ? 'image' : /^video\//.test(file.mimetype) ? 'video' : 'audio';
-    const attachmentUrl = `/uploads/${file.filename}`;
 
     await query(
-      `INSERT INTO messages (
-        id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, group_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9, $10)`,
-      [messageId, dialogId, text, String(sender.id), storedRecipientId, deliveredAt, attachmentUrl, attachmentType, file.originalname || file.filename, groupId || null]
+      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [mediaId, String(sender.id), String(file.mimetype || 'application/octet-stream'), String(file.originalname || ''), Number(file.size || 0), file.buffer]
     );
+
+    try {
+      await query(
+        `INSERT INTO messages (
+          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, group_id, media_id, client_message_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, '', $7, $8, $9, $10, $11)`,
+        [messageId, dialogId, text, String(sender.id), storedRecipientId, deliveredAt, attachmentType, file.originalname || '', groupId || null, mediaId, clientMessageId]
+      );
+    } catch (insertError) {
+      if (String(insertError?.code || '') === '23505' && clientMessageId) {
+        await query('DELETE FROM media_files WHERE id = $1', [mediaId]).catch(() => null);
+        const existing = await query(
+          'SELECT id FROM messages WHERE sender_id = $1 AND dialog_id = $2 AND client_message_id = $3 LIMIT 1',
+          [String(sender.id), dialogId, clientMessageId]
+        );
+        const existingId = existing.rows[0]?.id;
+        if (existingId) {
+          const existingMessage = await getFullMessageById(existingId);
+          return res.json({ message: existingMessage, duplicate: true });
+        }
+      }
+      throw insertError;
+    }
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
     res.json({ message });
   } catch (error) {
     console.error('message upload error', error);
-    res.status(500).json({ error: 'Не удалось отправить файл' });
+    if (String(error?.code || '') === '23505') {
+      return res.status(409).json({ error: 'Файл уже был отправлен' });
+    }
+    if (String(error?.code || '') === 'ENOSPC') {
+      return res.status(507).json({ error: 'На сервере закончилось место для временных файлов' });
+    }
+    return res.status(500).json({ error: error.message || 'Не удалось отправить файл' });
   }
 });
 
@@ -1060,13 +1128,19 @@ io.on('connection', (socket) => {
       const dialogId = makeDialogId(sender.id, recipient.id);
       const recipientOnline = onlineUsers.has(String(recipient.id));
       const messageId = crypto.randomUUID();
+      const clientMessageId = String(payload.clientMessageId || '').trim() || null;
 
-      await query(
-        `INSERT INTO messages (
-          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL)`,
-        [messageId, dialogId, String(payload.text).trim(), String(sender.id), String(recipient.id), recipientOnline ? new Date().toISOString() : null]
-      );
+      try {
+        await query(
+          `INSERT INTO messages (
+            id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, client_message_id
+           ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7)`,
+          [messageId, dialogId, String(payload.text).trim(), String(sender.id), String(recipient.id), recipientOnline ? new Date().toISOString() : null, clientMessageId]
+        );
+      } catch (insertError) {
+        if (String(insertError?.code || '') === '23505' && clientMessageId) return;
+        throw insertError;
+      }
 
       const message = await getFullMessageById(messageId);
       await broadcastMessageEvent('private-message', message);
@@ -1086,12 +1160,18 @@ io.on('connection', (socket) => {
       if (!membership.rowCount) return;
 
       const messageId = crypto.randomUUID();
-      await query(
-        `INSERT INTO messages (
-          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, group_id
-         ) VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, $6)`,
-        [messageId, `group:${groupId}`, String(payload.text).trim(), String(sender.id), String(sender.id), groupId]
-      );
+      const clientMessageId = String(payload.clientMessageId || '').trim() || null;
+      try {
+        await query(
+          `INSERT INTO messages (
+            id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, group_id, client_message_id
+           ) VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, $6, $7)`,
+          [messageId, `group:${groupId}`, String(payload.text).trim(), String(sender.id), String(sender.id), groupId, clientMessageId]
+        );
+      } catch (insertError) {
+        if (String(insertError?.code || '') === '23505' && clientMessageId) return;
+        throw insertError;
+      }
 
       await query(
         `INSERT INTO group_read_state (group_id, user_id, last_read_at)

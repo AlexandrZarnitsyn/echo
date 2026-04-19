@@ -95,6 +95,11 @@ function apiUrl(path) {
   return `${API_BASE_URL}${path}`;
 }
 
+function createClientMessageId(prefix = 'msg') {
+  if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 async function parseApiResponse(response) {
   const rawText = await response.text();
   let data = null;
@@ -614,6 +619,7 @@ async function sendPendingAttachment() {
       if (currentDialogUser?.type === 'group') formData.append('groupId', currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''));
       else formData.append('recipientId', currentDialogUser.id);
       formData.append('text', index === 0 ? caption : '');
+      formData.append('clientMessageId', createClientMessageId('upload'));
       formData.append('file', file);
 
       const response = await fetch(apiUrl('/api/messages/upload'), {
@@ -1248,6 +1254,12 @@ function createMessageNode(message) {
 }
 
 function addMessage(message) {
+  if (!message?.id) return;
+  const exists = currentDialogMessages.some((item) => item.id === message.id) || Boolean(chat.querySelector(`.message[data-id="${message.id}"]`));
+  if (exists) {
+    upsertMessage(message);
+    return;
+  }
   currentDialogMessages.push(message);
   chat.appendChild(createMessageNode(message));
   scrollChatToBottom();
@@ -1745,8 +1757,9 @@ async function submitMessage() {
   isSubmittingTextMessage = true;
   if (sendBtn) sendBtn.disabled = true;
   try {
-    if (currentDialogUser.type === 'group') socket.emit('send-group-message', { text, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '') });
-    else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
+    const clientMessageId = createClientMessageId('text');
+    if (currentDialogUser.type === 'group') socket.emit('send-group-message', { text, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''), clientMessageId });
+    else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id, clientMessageId });
     messageInput.value = '';
     messageInput.focus();
     setTimeout(() => {
