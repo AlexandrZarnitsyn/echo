@@ -28,3 +28,8 @@ window.APP_CONFIG = {
 - `/backend` — Node.js + Express + Socket.IO + PostgreSQL
 - `/backend/public` — фронтенд для same-origin запуска с Railway
 - `/` — фронтенд для отдельного статического деплоя
+
+
+## Persistent avatars on Railway
+
+To keep uploaded avatars after redeploys, mount a Railway volume to your backend service and set `UPLOADS_DIR=/data/uploads` (or any mounted path). Without a persistent uploads directory, files inside the container can be lost on redeploy.

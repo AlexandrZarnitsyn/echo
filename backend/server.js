@@ -14,7 +14,9 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 const DATABASE_URL = process.env.DATABASE_URL;
-const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads');
+const UPLOADS_DIR = process.env.UPLOADS_DIR
+  ? path.resolve(process.env.UPLOADS_DIR)
+  : path.join(__dirname, 'public', 'uploads');
 
 if (!DATABASE_URL) {
   console.error('DATABASE_URL is required');
@@ -59,8 +61,6 @@ function mapUserRow(row) {
     password: row.password,
     photo: row.photo || '',
     showPhone: row.show_phone !== false,
-    silentMode: row.silent_mode === true,
-    soundEnabled: row.sound_enabled !== false,
     createdAt: row.created_at
   };
 }
@@ -94,8 +94,6 @@ function publicUser(user, viewerId = null, blockedUserIds = []) {
     phoneHidden: !isSelf && !user.showPhone,
     showPhone: user.showPhone,
     photo: user.photo || '',
-    silentMode: isSelf ? Boolean(user.silentMode) : undefined,
-    soundEnabled: isSelf ? user.soundEnabled !== false : undefined,
     blockedUserIds: isSelf ? blockedUserIds.map(String) : undefined
   };
 }
@@ -113,13 +111,9 @@ async function initDatabase() {
       password TEXT NOT NULL,
       photo TEXT NOT NULL DEFAULT '',
       show_phone BOOLEAN NOT NULL DEFAULT TRUE,
-      silent_mode BOOLEAN NOT NULL DEFAULT FALSE,
-      sound_enabled BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-  await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS silent_mode BOOLEAN NOT NULL DEFAULT FALSE');
-  await query('ALTER TABLE users ADD COLUMN IF NOT EXISTS sound_enabled BOOLEAN NOT NULL DEFAULT TRUE');
 
   await query(`
     CREATE TABLE IF NOT EXISTS user_blocks (
@@ -226,8 +220,8 @@ app.post('/api/register', async (req, res) => {
 
     const id = crypto.randomUUID();
     await query(
-      `INSERT INTO users (id, name, phone, password, photo, show_phone, silent_mode, sound_enabled)
-       VALUES ($1, $2, $3, $4, '', TRUE, FALSE, TRUE)`,
+      `INSERT INTO users (id, name, phone, password, photo, show_phone)
+       VALUES ($1, $2, $3, $4, '', TRUE)`,
       [id, String(name).trim(), normalizedPhone, String(password)]
     );
 
@@ -263,7 +257,7 @@ app.post('/api/login', async (req, res) => {
 
 app.put('/api/profile', async (req, res) => {
   try {
-    const { userId, name, showPhone, silentMode, soundEnabled } = req.body || {};
+    const { userId, name, showPhone } = req.body || {};
     if (!name || String(name).trim().length < 2) {
       return res.status(400).json({ error: 'Имя должно содержать минимум 2 символа' });
     }
@@ -274,8 +268,8 @@ app.put('/api/profile', async (req, res) => {
     }
 
     await query(
-      'UPDATE users SET name = $2, show_phone = $3, silent_mode = $4, sound_enabled = $5 WHERE id = $1',
-      [String(userId), String(name).trim(), showPhone !== false, silentMode === true, soundEnabled !== false]
+      'UPDATE users SET name = $2, show_phone = $3 WHERE id = $1',
+      [String(userId), String(name).trim(), showPhone !== false]
     );
 
     const user = await getUserById(userId);

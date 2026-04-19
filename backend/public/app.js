@@ -41,8 +41,6 @@ const chatScrollControls = document.getElementById('chatScrollControls');
 const scrollToTopBtn = document.getElementById('scrollToTopBtn');
 const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 const themeSwitcher = document.getElementById('themeSwitcher');
-const soundNotificationsToggle = document.getElementById('soundNotificationsToggle');
-const silentModeToggle = document.getElementById('silentModeToggle');
 
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
@@ -68,7 +66,6 @@ let currentDialogState = {
   blockedByUser: false
 };
 let shouldStickToBottom = true;
-let notificationAudioContext = null;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -103,75 +100,7 @@ function getDialogAliases() {
 function getDisplayName(user) {
   if (!user) return '';
   const aliases = getDialogAliases();
-  return aliases[user.id] || user.name || user.phone || 'Без имени';
-}
-
-function getUserNickname(user) {
-  const displayName = getDisplayName(user);
-  const base = String(displayName).trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-zа-я0-9_]+/gi, '');
-  return `@${base || 'user'}`;
-}
-
-function shouldMuteNotifications() {
-  return currentUser?.silentMode === true;
-}
-
-function shouldPlayNotificationSound() {
-  return !shouldMuteNotifications() && currentUser?.soundEnabled !== false;
-}
-
-async function ensureNotificationPermission() {
-  if (!("Notification" in window)) return 'unsupported';
-  if (Notification.permission === 'granted' || Notification.permission === 'denied') return Notification.permission;
-  try {
-    return await Notification.requestPermission();
-  } catch {
-    return Notification.permission || 'default';
-  }
-}
-
-function playNotificationSound() {
-  if (!shouldPlayNotificationSound()) return;
-  try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return;
-    if (!notificationAudioContext) notificationAudioContext = new AudioCtx();
-    const ctx = notificationAudioContext;
-    if (ctx.state === 'suspended') ctx.resume();
-    const oscillator = ctx.createOscillator();
-    const gain = ctx.createGain();
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(880, ctx.currentTime);
-    oscillator.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.16);
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
-    oscillator.connect(gain);
-    gain.connect(ctx.destination);
-    oscillator.start();
-    oscillator.stop(ctx.currentTime + 0.24);
-  } catch {}
-}
-
-async function showIncomingNotification(message) {
-  if (shouldMuteNotifications() || !message || message.senderId === currentUser?.id) return;
-  const permission = await ensureNotificationPermission();
-  if (permission !== 'granted') return;
-  if (!document.hidden && document.hasFocus()) return;
-  const title = message.senderName || 'Новое сообщение';
-  const body = message.deletedAt ? 'Сообщение удалено' : message.text;
-  const notification = new Notification(title, { body, icon: DEFAULT_AVATAR, tag: `dialog:${message.dialogId}` });
-  notification.onclick = () => {
-    window.focus();
-    notification.close();
-  };
-}
-
-function handleIncomingMessageEffects(message, isCurrentDialog) {
-  if (!currentUser || message.senderId === currentUser.id) return;
-  if (isCurrentDialog && document.hasFocus() && !document.hidden) return;
-  playNotificationSound();
-  showIncomingNotification(message);
+  return aliases[user.id] || user.name;
 }
 
 function saveDialogAlias(otherUserId, alias) {
@@ -234,6 +163,12 @@ function getAvatar(user) {
   return (user && user.photo) ? resolveAssetUrl(user.photo) : DEFAULT_AVATAR;
 }
 
+function getAvatarImgMarkup(user, className = 'profile-avatar', alt = 'avatar') {
+  const safeAlt = String(alt).replace(/"/g, '&quot;');
+  const safeClass = String(className).replace(/"/g, '&quot;');
+  return `<img class="${safeClass}" src="${getAvatar(user)}" alt="${safeAlt}" onerror="this.onerror=null;this.src='${DEFAULT_AVATAR}'" />`;
+}
+
 function formatPhoneForDisplay(phone = '') {
   return phone || 'Номер скрыт';
 }
@@ -250,6 +185,7 @@ function formatPreview(user) {
 function renderCurrentUser() {
   currentUserText.textContent = `${currentUser.name} · ${formatPhoneForDisplay(currentUser.phone)}`;
   currentUserAvatar.src = getAvatar(currentUser);
+  currentUserAvatar.onerror = () => { currentUserAvatar.onerror = null; currentUserAvatar.src = DEFAULT_AVATAR; };
 }
 
 function renderUsers() {
@@ -275,16 +211,13 @@ function renderUsers() {
     card.innerHTML = `
       <div class="user-main">
         <div class="avatar-wrap">
-          <img class="profile-avatar" src="${getAvatar(user)}" alt="avatar" />
+          ${getAvatarImgMarkup(user)}
           ${unreadBadge}
         </div>
         <div class="user-main-content">
           <div class="user-top">
             <div class="user-name-line">
-              <div>
-                <div class="user-name">${getDisplayName(user)}</div>
-                <div class="user-nick">${getUserNickname(user)}</div>
-              </div>
+              <div class="user-name">${getDisplayName(user)}</div>
             </div>
             <div class="presence ${onlineUserIds.has(user.id) ? 'online' : ''}"></div>
           </div>
@@ -588,12 +521,11 @@ function setupSocket() {
   });
 
   socket.on('private-message', async (message) => {
-    const isCurrentDialog = Boolean(currentDialogUser && message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':'));
+    const isCurrentDialog = currentDialogUser && message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':');
     if (isCurrentDialog) {
       addMessage(message);
       socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
     }
-    handleIncomingMessageEffects(message, isCurrentDialog);
     await loadUsers();
   });
 
@@ -776,7 +708,7 @@ function renderBlacklist() {
     item.className = 'blacklist-item';
     item.innerHTML = `
       <div class="blacklist-user">
-        <img class="profile-avatar" src="${getAvatar(user)}" alt="avatar" />
+        ${getAvatarImgMarkup(user)}
         <div>
           <div class="blacklist-name">${getDisplayName(user)}</div>
           <div class="blacklist-subtitle">${user.phone || 'Номер скрыт'}</div>
@@ -804,9 +736,8 @@ function openProfileModal() {
   profileNameInput.value = currentUser?.name || '';
   profilePhonePreview.textContent = currentUser?.phone || '';
   showPhoneToggle.checked = currentUser?.showPhone !== false;
-  soundNotificationsToggle.checked = currentUser?.soundEnabled !== false;
-  silentModeToggle.checked = currentUser?.silentMode === true;
   profilePreviewAvatar.src = getAvatar(currentUser);
+  profilePreviewAvatar.onerror = () => { profilePreviewAvatar.onerror = null; profilePreviewAvatar.src = DEFAULT_AVATAR; };
   profilePhotoInput.value = '';
   avatarUploadText.textContent = 'Выбрать аватарку';
   switchSettingsTab('account');
@@ -832,9 +763,7 @@ async function saveProfile() {
       body: JSON.stringify({
         userId: currentUser.id,
         name: newName,
-        showPhone: showPhoneToggle.checked,
-        soundEnabled: soundNotificationsToggle.checked,
-        silentMode: silentModeToggle.checked
+        showPhone: showPhoneToggle.checked
       })
     });
     const nameData = await nameResponse.json();
@@ -947,23 +876,6 @@ if (themeSwitcher) {
   });
 }
 
-if (silentModeToggle) {
-  silentModeToggle.addEventListener('change', () => {
-    if (silentModeToggle.checked) {
-      soundNotificationsToggle.checked = false;
-    }
-  });
-}
-
-if (soundNotificationsToggle) {
-  soundNotificationsToggle.addEventListener('change', async () => {
-    if (soundNotificationsToggle.checked) {
-      silentModeToggle.checked = false;
-      await ensureNotificationPermission();
-    }
-  });
-}
-
 blacklistList.addEventListener('click', (event) => {
   const btn = event.target.closest('.blacklist-remove-btn');
   if (!btn) return;
@@ -1022,7 +934,7 @@ window.addEventListener('load', async () => {
   if (!savedUser) return;
 
   try {
-    currentUser = { soundEnabled: true, silentMode: false, ...JSON.parse(savedUser) };
+    currentUser = JSON.parse(savedUser);
     renderCurrentUser();
     showScreen(chatScreen);
     setupSocket();
