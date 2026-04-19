@@ -11,7 +11,6 @@ const passwordInput = document.getElementById('passwordInput');
 const currentUserText = document.getElementById('currentUserText');
 const currentUserAvatar = document.getElementById('currentUserAvatar');
 const logoutBtn = document.getElementById('logoutBtn');
-const createGroupBtn = document.getElementById('createGroupBtn');
 const userList = document.getElementById('userList');
 const searchInput = document.getElementById('searchInput');
 const dialogTitle = document.getElementById('dialogTitle');
@@ -40,8 +39,6 @@ const attachmentSendBtn = document.getElementById('attachmentSendBtn');
 const mediaViewerModal = document.getElementById('mediaViewerModal');
 const mediaViewerContent = document.getElementById('mediaViewerContent');
 const mediaViewerCloseBtn = document.getElementById('mediaViewerCloseBtn');
-const mediaViewerPrevBtn = document.getElementById('mediaViewerPrevBtn');
-const mediaViewerNextBtn = document.getElementById('mediaViewerNextBtn');
 const composerDropHint = document.getElementById('composerDropHint');
 const profileModal = document.getElementById('profileModal');
 const closeProfileBtn = document.getElementById('closeProfileBtn');
@@ -66,11 +63,6 @@ const chatScrollControls = document.getElementById('chatScrollControls');
 const scrollToTopBtn = document.getElementById('scrollToTopBtn');
 const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 const themeSwitcher = document.getElementById('themeSwitcher');
-const groupModal = document.getElementById('groupModal');
-const groupTitleInput = document.getElementById('groupTitleInput');
-const groupMembersList = document.getElementById('groupMembersList');
-const closeGroupBtn = document.getElementById('closeGroupBtn');
-const saveGroupBtn = document.getElementById('saveGroupBtn');
 
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
@@ -85,11 +77,7 @@ function apiUrl(path) {
 let mode = 'register';
 let currentUser = null;
 let currentDialogUser = null;
-let directUsers = [];
-let conversations = [];
 let users = [];
-let contacts = [];
-let currentMessages = [];
 let onlineUserIds = new Set();
 let socket = null;
 let blacklistUsers = [];
@@ -102,10 +90,8 @@ let currentDialogState = {
   blockedByUser: false
 };
 let shouldStickToBottom = true;
-let pendingAttachments = [];
+let pendingAttachment = null;
 let isUploadingAttachment = false;
-let mediaViewerItems = [];
-let mediaViewerIndex = 0;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -150,41 +136,6 @@ function saveDialogAlias(otherUserId, alias) {
   if (alias) aliases[otherUserId] = alias;
   else delete aliases[otherUserId];
   localStorage.setItem(DIALOG_ALIASES_KEY(currentUser.id), JSON.stringify(aliases));
-}
-
-function isGroupItem(item) {
-  return Boolean(item?.isGroup || item?.type === 'group');
-}
-
-function getItemId(item) {
-  return `${isGroupItem(item) ? 'group' : 'user'}:${item?.id || ''}`;
-}
-
-function getDisplayTitle(item) {
-  return isGroupItem(item) ? (item?.title || 'Беседа') : getDisplayName(item);
-}
-
-function getPreviewMembers(item) {
-  if (!isGroupItem(item)) return '';
-  return (item.members || []).filter((m) => m.id !== currentUser?.id).slice(0, 3).map((m) => m.name).join(', ');
-}
-
-function resolveCurrentDialogMessage(message) {
-  if (!currentDialogUser || !message) return false;
-  if (isGroupItem(currentDialogUser)) return String(message.conversationId || '') === String(currentDialogUser.id);
-  return String(message.dialogId || '') === [currentUser.id, currentDialogUser.id].sort().join(':');
-}
-
-function getAlbumItemsForMessage(message) {
-  if (!message) return [];
-  const mediaMessages = currentMessages.filter((item) => !item.deletedAt && item.attachmentUrl && ['image', 'video'].includes(item.attachmentType));
-  if (message.albumId) {
-    const grouped = mediaMessages.filter((item) => item.albumId === message.albumId).sort((a, b) => Number(a.albumIndex || 0) - Number(b.albumIndex || 0));
-    if (grouped.length > 1) {
-      return grouped.map((item) => ({ url: resolveAssetUrl(item.attachmentUrl), type: item.attachmentType, name: item.attachmentName || (item.attachmentType === 'video' ? 'Видео' : 'Фото') }));
-    }
-  }
-  return mediaMessages.map((item) => ({ url: resolveAssetUrl(item.attachmentUrl), type: item.attachmentType, name: item.attachmentName || (item.attachmentType === 'video' ? 'Видео' : 'Фото') }));
 }
 
 const DEFAULT_AVATAR = 'data:image/svg+xml;utf8,' + encodeURIComponent(`
@@ -374,89 +325,61 @@ function closeMediaViewer() {
   if (!mediaViewerModal || !mediaViewerContent) return;
   mediaViewerModal.classList.add('hidden');
   mediaViewerContent.querySelectorAll('video').forEach((video) => {
-    try { video.pause(); } catch {}
+    try { video.pause(); } catch (e) {}
+    video.removeAttribute('src');
+    try { video.load(); } catch (e) {}
   });
   mediaViewerContent.innerHTML = '';
-  mediaViewerItems = [];
-  mediaViewerIndex = 0;
-  if (mediaViewerPrevBtn) mediaViewerPrevBtn.classList.add('hidden');
-  if (mediaViewerNextBtn) mediaViewerNextBtn.classList.add('hidden');
 }
 
-function renderMediaViewer() {
-  if (!mediaViewerModal || !mediaViewerContent || !mediaViewerItems.length) return;
+function openMediaViewer(url, type, name) {
+  if (!mediaViewerModal || !mediaViewerContent || !url) return;
   mediaViewerContent.innerHTML = '';
-  const item = mediaViewerItems[mediaViewerIndex];
-  let node = null;
-  if (item.type === 'video') {
+  let node;
+  if (type === 'video') {
     node = document.createElement('video');
-    node.src = item.url;
+    node.className = 'media-viewer-video';
+    node.src = url;
     node.controls = true;
     node.autoplay = true;
-    node.className = 'media-viewer-video';
+    node.playsInline = true;
+    node.preload = 'metadata';
   } else {
     node = document.createElement('img');
-    node.src = item.url;
-    node.alt = item.name || 'Фото';
     node.className = 'media-viewer-image';
+    node.src = url;
+    node.alt = name || 'Вложение';
   }
   mediaViewerContent.appendChild(node);
-  const multiple = mediaViewerItems.length > 1;
-  if (mediaViewerPrevBtn) mediaViewerPrevBtn.classList.toggle('hidden', !multiple);
-  if (mediaViewerNextBtn) mediaViewerNextBtn.classList.toggle('hidden', !multiple);
-}
-
-function openMediaViewer(input, type, name) {
-  if (!mediaViewerModal || !mediaViewerContent) return;
-  if (Array.isArray(input)) {
-    mediaViewerItems = input;
-    mediaViewerIndex = Math.max(0, Math.min(type || 0, mediaViewerItems.length - 1));
-  } else {
-    mediaViewerItems = [{ url: input, type, name }];
-    mediaViewerIndex = 0;
-  }
-  renderMediaViewer();
   mediaViewerModal.classList.remove('hidden');
 }
 
-function shiftMediaViewer(step) {
-  if (!mediaViewerItems.length) return;
-  mediaViewerIndex = (mediaViewerIndex + step + mediaViewerItems.length) % mediaViewerItems.length;
-  renderMediaViewer();
-}
-
-function renderAttachmentPreview(file) {
+function createAttachmentPreviewElement(file) {
   if (!file || !attachmentModalPreview) return;
-  const objectUrl = URL.createObjectURL(file);
+  clearAttachmentPreviewElement();
+  const previewUrl = URL.createObjectURL(file);
+  let mediaNode;
 
-  const card = document.createElement('div');
-  card.className = 'attachment-preview-card';
-  card.dataset.previewUrl = objectUrl;
-
-  let mediaNode = null;
-  if (file.type.startsWith('image/')) {
-    mediaNode = document.createElement('img');
-    mediaNode.src = objectUrl;
-    mediaNode.alt = file.name;
-    mediaNode.className = 'attachment-preview-media';
-  } else if (file.type.startsWith('video/')) {
+  if (file.type.startsWith('video/')) {
     mediaNode = document.createElement('video');
-    mediaNode.src = objectUrl;
-    mediaNode.controls = true;
-    mediaNode.preload = 'metadata';
     mediaNode.className = 'attachment-preview-media';
+    mediaNode.src = previewUrl;
+    mediaNode.muted = true;
+    mediaNode.playsInline = true;
+    mediaNode.preload = 'metadata';
+    mediaNode.controls = true;
+  } else {
+    mediaNode = document.createElement('img');
+    mediaNode.className = 'attachment-preview-media';
+    mediaNode.src = previewUrl;
+    mediaNode.alt = file.name || 'preview';
   }
 
-  const nameNode = document.createElement('div');
-  nameNode.className = 'attachment-preview-name';
-  nameNode.textContent = file.name;
-
-  if (mediaNode) card.appendChild(mediaNode);
-  card.appendChild(nameNode);
-  attachmentModalPreview.appendChild(card);
+  mediaNode.dataset.previewUrl = previewUrl;
+  attachmentModalPreview.appendChild(mediaNode);
 }
 
-function resetAttachmentPreview() {
+function clearAttachmentPreviewElement() {
   if (!attachmentModalPreview) return;
   attachmentModalPreview.querySelectorAll('[data-preview-url]').forEach((node) => {
     try { URL.revokeObjectURL(node.dataset.previewUrl); } catch {}
@@ -467,47 +390,83 @@ function resetAttachmentPreview() {
 function closeAttachmentModal() {
   if (attachmentModal) attachmentModal.classList.add('hidden');
   if (attachmentCaptionInput) attachmentCaptionInput.value = '';
-  resetAttachmentPreview();
-  pendingAttachments = [];
+  clearAttachmentPreviewElement();
+  pendingAttachment = null;
   if (messageAttachmentInput) messageAttachmentInput.value = '';
+  isUploadingAttachment = false;
   if (attachmentSendBtn) attachmentSendBtn.disabled = false;
 }
 
-function setPendingAttachments(files) {
-  const accepted = [...files].filter((file) => file && (/^image\//.test(file.type) || /^video\//.test(file.type))).slice(0, 10);
-  if (!accepted.length) return;
-  pendingAttachments = pendingAttachments.concat(accepted).slice(0, 10);
-  if (attachmentModalTitle) attachmentModalTitle.textContent = pendingAttachments.length > 1 ? `Отправить ${pendingAttachments.length} файлов` : (pendingAttachments[0].type.startsWith('video/') ? 'Отправить видео' : 'Отправить изображение');
-  if (attachmentCaptionInput && !attachmentCaptionInput.value) attachmentCaptionInput.value = messageInput.value.trim();
-  resetAttachmentPreview();
-  pendingAttachments.forEach(renderAttachmentPreview);
+function openAttachmentModal(file) {
+  if (!file) return;
+  pendingAttachment = file;
+  if (attachmentModalTitle) attachmentModalTitle.textContent = file.type.startsWith('video/') ? 'Отправить видео' : 'Отправить изображение';
+  if (attachmentCaptionInput) attachmentCaptionInput.value = messageInput.value.trim();
+  createAttachmentPreviewElement(file);
   if (attachmentModal) attachmentModal.classList.remove('hidden');
 }
 
+function setPendingAttachment(file) {
+  if (!file) {
+    closeAttachmentModal();
+    return;
+  }
+  const isSupported = file.type.startsWith('image/') || file.type.startsWith('video/');
+  if (!isSupported) {
+    alert('Можно отправлять только фото и видео');
+    return;
+  }
+  openAttachmentModal(file);
+}
+
+function formatAttachmentSize(file) {
+  if (!file) return '';
+  const mb = file.size / (1024 * 1024);
+  return `${file.type.startsWith('video/') ? 'Видео' : 'Фото'} · ${mb >= 1 ? mb.toFixed(1) + ' МБ' : Math.max(1, Math.round(file.size / 1024)) + ' КБ'}`;
+}
+
+function updateAttachmentSubtitle() {}
+
 async function sendPendingAttachment() {
-  if (!pendingAttachments.length || !currentDialogUser || isUploadingAttachment) return;
+  if (!pendingAttachment || !currentDialogUser || !currentDialogState.canMessage || isUploadingAttachment) return;
   isUploadingAttachment = true;
   if (attachmentSendBtn) attachmentSendBtn.disabled = true;
   const caption = (attachmentCaptionInput?.value || '').trim();
   const formData = new FormData();
   formData.append('currentUserId', currentUser.id);
-  if (isGroupItem(currentDialogUser)) formData.append('conversationId', currentDialogUser.id);
-  else formData.append('recipientId', currentDialogUser.id);
+  formData.append('recipientId', currentDialogUser.id);
   formData.append('text', caption);
-  pendingAttachments.forEach((file) => formData.append('files', file));
+  formData.append('file', pendingAttachment);
 
   try {
-    const response = await fetch(apiUrl('/api/messages/upload'), { method: 'POST', body: formData });
+    const response = await fetch(apiUrl('/api/messages/upload'), {
+      method: 'POST',
+      body: formData
+    });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Не удалось отправить вложение');
-    closeAttachmentModal();
+    if (!response.ok) throw new Error(data.error || 'Не удалось отправить файл');
     messageInput.value = '';
+    closeAttachmentModal();
+    await loadUsers();
   } catch (error) {
-    alert(error.message || 'Не удалось отправить вложение');
-    if (attachmentSendBtn) attachmentSendBtn.disabled = false;
-  } finally {
+    alert(error.message || 'Не удалось отправить файл');
     isUploadingAttachment = false;
+    if (attachmentSendBtn) attachmentSendBtn.disabled = false;
   }
+}
+
+function renderCurrentUser() {
+  currentUserText.textContent = `${currentUser.name} · ${formatPhoneForDisplay(currentUser.phone)}`;
+  const nextAvatar = getAvatar(currentUser) || DEFAULT_AVATAR;
+  if (currentUserAvatar.dataset.currentSrc !== nextAvatar) {
+    currentUserAvatar.src = nextAvatar;
+    currentUserAvatar.dataset.currentSrc = nextAvatar;
+  }
+  currentUserAvatar.onerror = () => {
+    currentUserAvatar.onerror = null;
+    currentUserAvatar.src = DEFAULT_AVATAR;
+    currentUserAvatar.dataset.currentSrc = DEFAULT_AVATAR;
+  };
 }
 
 function loadNotificationPrefs() {
@@ -601,7 +560,6 @@ function createUserCard(user) {
   const card = document.createElement('div');
   card.className = 'user-card';
   card.dataset.userId = user.id;
-  card.dataset.itemType = isGroupItem(user) ? 'group' : 'user';
 
   const main = document.createElement('div');
   main.className = 'user-main';
@@ -622,7 +580,7 @@ function createUserCard(user) {
   nameLine.className = 'user-name-line';
   const name = document.createElement('div');
   name.className = 'user-name';
-  name.title = getDisplayTitle(user) || user.name || '';
+  name.title = getDisplayName(user) || user.name || '';
   nameLine.appendChild(name);
   const presence = document.createElement('div');
   presence.className = 'presence';
@@ -637,13 +595,12 @@ function createUserCard(user) {
   main.appendChild(avatarWrap);
   main.appendChild(contentWrap);
   card.appendChild(main);
-  card.addEventListener('click', () => selectDialog(card.dataset.userId, card.dataset.itemType));
+  card.addEventListener('click', () => selectDialog(card.dataset.userId));
   return card;
 }
 
 function updateUserCard(card, user) {
   card.dataset.userId = user.id;
-  card.dataset.itemType = isGroupItem(user) ? 'group' : 'user';
   card.classList.toggle('active', currentDialogUser?.id === user.id);
   const avatarNode = card.querySelector('.profile-avatar, .default-avatar, .avatar-photo-shell');
   if (avatarNode) syncAvatarElement(avatarNode, user);
@@ -660,15 +617,7 @@ function updateUserCard(card, user) {
   const preview = card.querySelector('.user-preview');
   if (preview) preview.textContent = formatPreview(user);
   const presence = card.querySelector('.presence');
-  if (presence) {
-    if (isGroupItem(user)) {
-      presence.classList.remove('online');
-      presence.textContent = `${user.memberCount || (user.members || []).length || 0} участ.`;
-    } else {
-      presence.textContent = '';
-      presence.classList.toggle('online', onlineUserIds.has(user.id));
-    }
-  }
+  if (presence) presence.classList.toggle('online', onlineUserIds.has(user.id));
 }
 
 function renderUsers() {
@@ -681,11 +630,11 @@ function renderUsers() {
     return;
   }
 
-  const existingCards = new Map([...userList.querySelectorAll('.user-card')].map((card) => [`${card.dataset.itemType}:${card.dataset.userId}`, card]));
+  const existingCards = new Map([...userList.querySelectorAll('.user-card')].map((card) => [card.dataset.userId, card]));
   userList.querySelectorAll('.empty-users').forEach((node) => node.remove());
 
   users.forEach((user, index) => {
-    let card = existingCards.get(getItemId(user));
+    let card = existingCards.get(user.id);
     if (!card) {
       card = createUserCard(user);
     }
@@ -694,7 +643,7 @@ function renderUsers() {
     if (expectedNode !== card) {
       userList.insertBefore(card, expectedNode || null);
     }
-    existingCards.delete(getItemId(user));
+    existingCards.delete(user.id);
   });
 
   existingCards.forEach((card) => card.remove());
@@ -775,7 +724,7 @@ function createMessageNode(message) {
       mediaNode.src = attachmentUrl;
       mediaNode.alt = message.attachmentName || 'Фото';
       mediaNode.loading = 'lazy';
-      mediaNode.addEventListener('click', () => { const items = getAlbumItemsForMessage(message); const currentIndex = items.findIndex((item) => item.url === attachmentUrl); openMediaViewer(items, currentIndex >= 0 ? currentIndex : 0); });
+      mediaNode.addEventListener('click', () => openMediaViewer(attachmentUrl, 'image', message.attachmentName || 'Фото'));
     } else if (message.attachmentType === 'video') {
       mediaNode = document.createElement('video');
       mediaNode.className = 'dialog-video dialog-media-clickable';
@@ -785,7 +734,7 @@ function createMessageNode(message) {
       mediaNode.addEventListener('click', (event) => {
         if (event.target === mediaNode) {
           event.preventDefault();
-          const items = getAlbumItemsForMessage(message); const currentIndex = items.findIndex((item) => item.url === attachmentUrl); openMediaViewer(items, currentIndex >= 0 ? currentIndex : 0);
+          openMediaViewer(attachmentUrl, 'video', message.attachmentName || 'Видео');
         }
       });
     } else {
@@ -807,7 +756,7 @@ function createMessageNode(message) {
   if (content.textContent || message.deletedAt) node.appendChild(content);
   if (mediaNode) node.appendChild(mediaNode);
 
-  if (isMe && !message.deletedAt && !message.conversationId) {
+  if (isMe && !message.deletedAt) {
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     actions.innerHTML = `
@@ -826,14 +775,11 @@ function createMessageNode(message) {
 }
 
 function addMessage(message) {
-  currentMessages.push(message);
   chat.appendChild(createMessageNode(message));
   scrollChatToBottom();
 }
 
 function upsertMessage(message) {
-  const existingIndex = currentMessages.findIndex((item) => item.id === message.id);
-  if (existingIndex >= 0) currentMessages[existingIndex] = message; else currentMessages.push(message);
   const existing = chat.querySelector(`.message[data-id="${message.id}"]`);
   const replacement = createMessageNode(message);
   if (existing) existing.replaceWith(replacement);
@@ -899,18 +845,14 @@ function applyDialogRestrictions() {
 
 async function loadUsers() {
   const search = searchInput.value.trim();
-  const [usersResponse, conversationsResponse] = await Promise.all([
-    fetch(apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)),
-    fetch(apiUrl(`/api/conversations?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`))
-  ]);
-  const usersData = await usersResponse.json();
-  const conversationsData = await conversationsResponse.json();
-  directUsers = usersData.users || [];
-  conversations = conversationsData.conversations || [];
-  users = [...conversations, ...directUsers].sort((a, b) => new Date(b.lastMessage?.createdAt || 0) - new Date(a.lastMessage?.createdAt || 0));
+  const response = await fetch(
+    apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)
+  );
+  const data = await response.json();
+  users = data.users || [];
 
   if (currentDialogUser) {
-    const foundCurrent = users.find((user) => user.id === currentDialogUser.id && isGroupItem(user) === isGroupItem(currentDialogUser));
+    const foundCurrent = users.find((user) => user.id === currentDialogUser.id);
     if (foundCurrent) {
       currentDialogUser = foundCurrent;
       currentDialogState = {
@@ -926,15 +868,12 @@ async function loadUsers() {
   renderUsers();
   updateDialogHeader();
   applyDialogRestrictions();
-  showDialogUI(Boolean(currentDialogUser));
-}
 
-async function loadContacts() {
-  const response = await fetch(apiUrl(`/api/contacts?currentUserId=${encodeURIComponent(currentUser.id)}`));
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || 'Не удалось получить контакты');
-  contacts = data.users || [];
-  renderGroupMembers();
+  if (currentDialogUser) {
+    showDialogUI(true);
+  } else {
+    showDialogUI(false);
+  }
 }
 
 async function loadPresence() {
@@ -946,28 +885,24 @@ async function loadPresence() {
 
 function updateDialogHeader() {
   if (!currentDialogUser) {
-    dialogTitle.textContent = 'Выберите диалог';
-    dialogSubtitle.textContent = 'Личные сообщения и беседы в реальном времени';
+    dialogTitle.textContent = 'Выберите собеседника';
+    dialogSubtitle.textContent = 'Личные сообщения в реальном времени';
     backToDialogsBtn.classList.add('hidden');
     renameDialogBtn.classList.add('hidden');
     return;
   }
 
-  dialogTitle.textContent = getDisplayTitle(currentDialogUser);
-  renameDialogBtn.classList.toggle('hidden', isGroupItem(currentDialogUser));
-  if (isGroupItem(currentDialogUser)) {
-    dialogSubtitle.textContent = `${currentDialogUser.memberCount || (currentDialogUser.members || []).length} участников · ${getPreviewMembers(currentDialogUser)}`;
-  } else {
-    const phoneText = currentDialogUser.phone ? currentDialogUser.phone : 'Номер скрыт';
-    dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id)
-      ? `${phoneText} · онлайн`
-      : phoneText;
-  }
+  dialogTitle.textContent = getDisplayName(currentDialogUser);
+  renameDialogBtn.classList.remove('hidden');
+  const phoneText = currentDialogUser.phone ? currentDialogUser.phone : 'Номер скрыт';
+  dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id)
+    ? `${phoneText} · онлайн`
+    : phoneText;
   backToDialogsBtn.classList.remove('hidden');
 }
 
-async function selectDialog(userId, itemType = 'user') {
-  const selected = users.find((user) => user.id === userId && (itemType === 'group' ? isGroupItem(user) : !isGroupItem(user)));
+async function selectDialog(userId) {
+  const selected = users.find((user) => user.id === userId);
   if (!selected) return;
 
   currentDialogUser = selected;
@@ -982,9 +917,7 @@ async function selectDialog(userId, itemType = 'user') {
   applyDialogRestrictions();
   resetEditingState();
 
-  const response = await fetch(isGroupItem(selected)
-    ? apiUrl(`/api/messages/conversation/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`)
-    : apiUrl(`/api/messages/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`));
+  const response = await fetch(apiUrl(`/api/messages/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`));
   const data = await response.json();
 
   currentDialogState = {
@@ -994,9 +927,8 @@ async function selectDialog(userId, itemType = 'user') {
   };
 
   chat.innerHTML = '';
-  currentMessages = data.messages || [];
   shouldStickToBottom = true;
-  currentMessages.forEach((message) => {
+  (data.messages || []).forEach((message) => {
     chat.appendChild(createMessageNode(message));
   });
   scrollChatToBottom(true);
@@ -1005,8 +937,7 @@ async function selectDialog(userId, itemType = 'user') {
   updateDialogHeader();
 
   if (socket) {
-    if (isGroupItem(selected)) socket.emit('open-conversation', { currentUserId: currentUser.id, conversationId: userId });
-    else socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: userId });
+    socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: userId });
   }
 
   await loadUsers();
@@ -1020,7 +951,6 @@ function exitDialog() {
     blockedByUser: false
   };
   chat.innerHTML = '';
-  currentMessages = [];
   shouldStickToBottom = true;
   resetEditingState();
   updateDialogHeader();
@@ -1044,10 +974,10 @@ function setupSocket() {
   });
 
   socket.on('private-message', async (message) => {
-    const isCurrentDialog = resolveCurrentDialogMessage(message);
+    const isCurrentDialog = currentDialogUser && message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':');
     if (isCurrentDialog) {
       addMessage(message);
-      if (isGroupItem(currentDialogUser)) socket.emit('open-conversation', { currentUserId: currentUser.id, conversationId: currentDialogUser.id }); else socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
+      socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
     }
     handleIncomingNotification(message, Boolean(isCurrentDialog));
     await loadUsers();
@@ -1171,14 +1101,13 @@ async function submitMessage() {
     return;
   }
 
-  if (pendingAttachments.length) {
+  if (pendingAttachment) {
     await sendPendingAttachment();
     return;
   }
 
   if (!text || !socket) return;
-  if (isGroupItem(currentDialogUser)) socket.emit('send-message', { text, conversationId: currentDialogUser.id });
-  else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
+  socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
   messageInput.value = '';
   messageInput.focus();
 }
@@ -1261,58 +1190,6 @@ function renameCurrentDialogUser() {
   renderUsers();
   updateDialogHeader();
   if (!profileModal.classList.contains('hidden')) renderBlacklist();
-}
-
-function renderGroupMembers() {
-  if (!groupMembersList) return;
-  groupMembersList.innerHTML = '';
-  contacts.forEach((user) => {
-    const row = document.createElement('label');
-    row.className = 'group-member-option';
-    row.innerHTML = `<input type="checkbox" value="${user.id}" /> <span>${user.name}</span>`;
-    groupMembersList.appendChild(row);
-  });
-}
-
-async function openGroupModal() {
-  if (!currentUser || !groupModal) return;
-  if (groupTitleInput) groupTitleInput.value = '';
-  groupModal.classList.remove('hidden');
-  try {
-    await loadContacts();
-  } catch (error) {
-    console.error('group modal load error', error);
-    if (groupMembersList) groupMembersList.innerHTML = '<div class="group-members-empty">Не удалось загрузить список контактов</div>';
-  }
-}
-
-function closeGroupModal() {
-  if (groupModal) groupModal.classList.add('hidden');
-}
-
-async function saveGroupConversation() {
-  const title = groupTitleInput?.value.trim();
-  const memberIds = [...(groupMembersList?.querySelectorAll('input:checked') || [])].map((input) => input.value);
-  if (!title || title.length < 2) return alert('Введите название беседы');
-  if (!memberIds.length) return alert('Выберите хотя бы одного участника');
-  if (saveGroupBtn) saveGroupBtn.disabled = true;
-  try {
-    const response = await fetch(apiUrl('/api/conversations'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ currentUserId: currentUser.id, title, memberIds })
-    });
-    const data = await response.json();
-    if (!response.ok) return alert(data.error || 'Не удалось создать беседу');
-    closeGroupModal();
-    await loadUsers();
-    await selectDialog(data.conversation.id, 'group');
-  } catch (error) {
-    console.error('save group error', error);
-    alert('Не удалось создать беседу');
-  } finally {
-    if (saveGroupBtn) saveGroupBtn.disabled = false;
-  }
 }
 
 function openProfileModal() {
@@ -1447,9 +1324,6 @@ logoutBtn.addEventListener('click', logout);
 backToDialogsBtn.addEventListener('click', exitDialog);
 blockToggleBtn.addEventListener('click', toggleBlockUser);
 renameDialogBtn.addEventListener('click', renameCurrentDialogUser);
-if (createGroupBtn) createGroupBtn.addEventListener('click', openGroupModal);
-if (closeGroupBtn) closeGroupBtn.addEventListener('click', closeGroupModal);
-if (saveGroupBtn) saveGroupBtn.addEventListener('click', saveGroupConversation);
 
 if (messageAttachBtn) {
   messageAttachBtn.addEventListener('click', () => messageAttachmentInput.click());
@@ -1457,8 +1331,8 @@ if (messageAttachBtn) {
 
 if (messageAttachmentInput) {
   messageAttachmentInput.addEventListener('change', () => {
-    const files = [...messageAttachmentInput.files];
-    if (files.length) setPendingAttachments(files);
+    const file = messageAttachmentInput.files[0];
+    if (file) setPendingAttachment(file);
   });
 }
 
@@ -1472,16 +1346,14 @@ if (mediaViewerModal) {
   });
 }
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && mediaViewerModal && !mediaViewerModal.classList.contains('hidden')) { closeMediaViewer(); }
-  if (event.key === 'ArrowLeft' && mediaViewerModal && !mediaViewerModal.classList.contains('hidden')) { shiftMediaViewer(-1); }
-  if (event.key === 'ArrowRight' && mediaViewerModal && !mediaViewerModal.classList.contains('hidden')) { shiftMediaViewer(1); }
+  if (event.key === 'Escape' && mediaViewerModal && !mediaViewerModal.classList.contains('hidden')) {
+    closeMediaViewer();
+  }
 });
 
 if (attachmentCancelBtn) attachmentCancelBtn.addEventListener('click', closeAttachmentModal);
 if (attachmentChooseAnotherBtn) attachmentChooseAnotherBtn.addEventListener('click', () => messageAttachmentInput && messageAttachmentInput.click());
 if (attachmentSendBtn) attachmentSendBtn.addEventListener('click', sendPendingAttachment);
-if (mediaViewerPrevBtn) mediaViewerPrevBtn.addEventListener('click', () => shiftMediaViewer(-1));
-if (mediaViewerNextBtn) mediaViewerNextBtn.addEventListener('click', () => shiftMediaViewer(1));
 
 function handleDragState(active) {
   if (!currentDialogState.canMessage) return;
@@ -1505,9 +1377,9 @@ function handleDragState(active) {
       event.preventDefault();
       event.stopPropagation();
       if (eventName === 'drop') {
-        const files = [...(event.dataTransfer?.files || [])];
-        if (files.length && currentDialogUser && currentDialogState.canMessage) {
-          setPendingAttachments(files);
+        const file = event.dataTransfer?.files?.[0];
+        if (file && currentDialogUser && currentDialogState.canMessage) {
+          setPendingAttachment(file);
         }
       }
       handleDragState(false);

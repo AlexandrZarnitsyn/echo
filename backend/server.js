@@ -55,7 +55,7 @@ function makeDialogId(userA, userB) {
 function mapUserRow(row) {
   if (!row) return null;
   return {
-    id: String(row.shared_id || row.id),
+    id: String(row.id),
     name: row.name,
     phone: row.phone,
     password: row.password,
@@ -68,7 +68,7 @@ function mapUserRow(row) {
 function mapMessageRow(row) {
   if (!row) return null;
   return {
-    id: String(row.shared_id || row.id),
+    id: String(row.id),
     dialogId: row.dialog_id,
     text: row.text || '',
     createdAt: row.created_at,
@@ -84,10 +84,7 @@ function mapMessageRow(row) {
     deletedAt: row.deleted_at,
     attachmentUrl: row.attachment_url || '',
     attachmentType: row.attachment_type || '',
-    attachmentName: row.attachment_name || '',
-    conversationId: row.conversation_id || '',
-    albumId: row.album_id || '',
-    albumIndex: Number(row.album_index || 0)
+    attachmentName: row.attachment_name || ''
   };
 }
 
@@ -131,25 +128,6 @@ async function initDatabase() {
   `);
 
   await query(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'group',
-      created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await query(`
-    CREATE TABLE IF NOT EXISTS conversation_members (
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (conversation_id, user_id)
-    );
-  `);
-
-  await query(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       dialog_id TEXT NOT NULL,
@@ -164,12 +142,6 @@ async function initDatabase() {
     );
   `);
 
-  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS conversation_id TEXT NULL REFERENCES conversations(id) ON DELETE CASCADE;`);
-  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS shared_id TEXT NOT NULL DEFAULT '';`);
-  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS album_id TEXT NOT NULL DEFAULT '';`);
-  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS album_index INT NOT NULL DEFAULT 0;`);
-  await query(`ALTER TABLE messages ALTER COLUMN recipient_id DROP NOT NULL;`).catch(() => {});
-  await query(`ALTER TABLE messages ALTER COLUMN dialog_id DROP NOT NULL;`).catch(() => {});
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT NOT NULL DEFAULT '';`);
@@ -191,31 +163,6 @@ async function getUserByPhone(phone) {
 async function getBlockedIds(userId) {
   const result = await query('SELECT blocked_id FROM user_blocks WHERE blocker_id = $1', [String(userId)]);
   return result.rows.map((row) => String(row.blocked_id));
-}
-
-async function getConversationById(conversationId) {
-  const result = await query('SELECT * FROM conversations WHERE id = $1 LIMIT 1', [String(conversationId)]);
-  return result.rows[0] || null;
-}
-
-async function getConversationMembers(conversationId) {
-  const result = await query(
-    `SELECT u.*
-     FROM conversation_members cm
-     INNER JOIN users u ON u.id = cm.user_id
-     WHERE cm.conversation_id = $1
-     ORDER BY u.name ASC`,
-    [String(conversationId)]
-  );
-  return result.rows.map(mapUserRow);
-}
-
-async function isConversationMember(conversationId, userId) {
-  const result = await query(
-    'SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2 LIMIT 1',
-    [String(conversationId), String(userId)]
-  );
-  return result.rowCount > 0;
 }
 
 async function areUsersBlocked(userAId, userBId) {
@@ -436,133 +383,6 @@ app.delete('/api/block/:otherUserId', async (req, res) => {
   } catch (error) {
     console.error('unblock error', error);
     res.status(500).json({ error: 'Не удалось удалить из черного списка' });
-  }
-});
-
-app.get('/api/contacts', async (req, res) => {
-  try {
-    const currentUserId = String(req.query.currentUserId || '');
-    const currentUser = await getUserById(currentUserId);
-    if (!currentUser) return res.json({ users: [] });
-    const result = await query('SELECT * FROM users WHERE id <> $1 ORDER BY name ASC', [currentUserId]);
-    res.json({ users: result.rows.map((row) => publicUser(mapUserRow(row), currentUserId)) });
-  } catch (error) {
-    console.error('contacts error', error);
-    res.status(500).json({ error: 'Не удалось получить контакты' });
-  }
-});
-
-app.post('/api/conversations', async (req, res) => {
-  try {
-    const currentUserId = String(req.body?.currentUserId || '');
-    const title = String(req.body?.title || '').trim();
-    const memberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds.map(String) : [];
-    if (!title || title.length < 2) return res.status(400).json({ error: 'Название беседы слишком короткое' });
-    const creator = await getUserById(currentUserId);
-    if (!creator) return res.status(404).json({ error: 'Пользователь не найден' });
-    const uniqueMembers = [...new Set([currentUserId, ...memberIds.filter(Boolean)])];
-    if (uniqueMembers.length < 2) return res.status(400).json({ error: 'Добавьте хотя бы одного участника' });
-    const conversationId = crypto.randomUUID();
-    await query('INSERT INTO conversations (id, title, created_by, type) VALUES ($1, $2, $3, $4)', [conversationId, title, currentUserId, 'group']);
-    for (const userId of uniqueMembers) {
-      await query('INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [conversationId, userId]);
-    }
-    const members = await getConversationMembers(conversationId);
-    const payload = { id: conversationId, type: 'group', title, members: members.map((m) => publicUser(m, currentUserId)), unreadCount: 0, canMessage: true, isGroup: true };
-    uniqueMembers.forEach((userId) => io.to(`user:${userId}`).emit('conversation:created', payload));
-    res.json({ conversation: payload });
-  } catch (error) {
-    console.error('conversation create error', error);
-    res.status(500).json({ error: 'Не удалось создать беседу' });
-  }
-});
-
-app.get('/api/conversations', async (req, res) => {
-  try {
-    const currentUserId = String(req.query.currentUserId || '');
-    const search = String(req.query.search || '').trim().toLowerCase();
-    const result = await query(
-      `WITH member_conversations AS (
-          SELECT c.*
-          FROM conversations c
-          INNER JOIN conversation_members cm ON cm.conversation_id = c.id
-          WHERE cm.user_id = $1
-        ),
-        unread_counts AS (
-          SELECT conversation_id, COUNT(*)::int AS unread_count
-          FROM messages
-          WHERE conversation_id IS NOT NULL AND recipient_id = $1 AND read_at IS NULL AND deleted_at IS NULL
-          GROUP BY conversation_id
-        ),
-        last_messages AS (
-          SELECT DISTINCT ON (conversation_id) conversation_id, text, created_at, sender_id, deleted_at, attachment_type, attachment_name
-          FROM messages
-          WHERE conversation_id IS NOT NULL
-          ORDER BY conversation_id, created_at DESC
-        )
-       SELECT mc.*, COALESCE(uc.unread_count, 0) AS unread_count, lm.text AS last_message_text, lm.created_at AS last_message_created_at, lm.sender_id AS last_message_sender_id, lm.deleted_at AS last_message_deleted_at, lm.attachment_type AS last_message_attachment_type, lm.attachment_name AS last_message_attachment_name
-       FROM member_conversations mc
-       LEFT JOIN unread_counts uc ON uc.conversation_id = mc.id
-       LEFT JOIN last_messages lm ON lm.conversation_id = mc.id
-       ORDER BY COALESCE(lm.created_at, mc.created_at) DESC`,
-      [currentUserId]
-    );
-    const conversations = [];
-    for (const row of result.rows) {
-      if (search && !String(row.title || '').toLowerCase().includes(search)) continue;
-      const members = await getConversationMembers(row.id);
-      conversations.push({
-        id: row.id,
-        type: 'group',
-        isGroup: true,
-        title: row.title,
-        members: members.map((m) => publicUser(m, currentUserId)),
-        memberCount: members.length,
-        unreadCount: Number(row.unread_count || 0),
-        canMessage: true,
-        lastMessage: row.last_message_created_at ? {
-          text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
-          createdAt: row.last_message_created_at,
-          senderId: String(row.last_message_sender_id || ''),
-          attachmentType: row.last_message_attachment_type || '',
-          attachmentName: row.last_message_attachment_name || '',
-          deletedAt: row.last_message_deleted_at || null
-        } : null
-      });
-    }
-    res.json({ conversations });
-  } catch (error) {
-    console.error('conversations error', error);
-    res.status(500).json({ error: 'Не удалось получить беседы' });
-  }
-});
-
-app.get('/api/messages/conversation/:conversationId', async (req, res) => {
-  try {
-    const currentUserId = String(req.query.currentUserId || '');
-    const conversationId = String(req.params.conversationId || '');
-    if (!await isConversationMember(conversationId, currentUserId)) return res.status(403).json({ error: 'Нет доступа к беседе' });
-    const result = await query(
-      `SELECT DISTINCT ON (COALESCE(NULLIF(m.shared_id, ''), m.id))
-          m.*, su.name AS sender_name, su.phone AS sender_phone, COALESCE(ru.name, '') AS recipient_name, COALESCE(ru.phone, '') AS recipient_phone
-       FROM messages m
-       INNER JOIN users su ON su.id = m.sender_id
-       LEFT JOIN users ru ON ru.id = m.recipient_id
-       WHERE m.conversation_id = $1
-       ORDER BY COALESCE(NULLIF(m.shared_id, ''), m.id), m.created_at ASC`,
-      [conversationId]
-    );
-    const changed = await query(
-      `UPDATE messages SET read_at = COALESCE(read_at, NOW()), delivered_at = COALESCE(delivered_at, NOW())
-       WHERE conversation_id = $1 AND recipient_id = $2 AND deleted_at IS NULL AND (read_at IS NULL OR delivered_at IS NULL)
-       RETURNING *`,
-      [conversationId, currentUserId]
-    );
-    await enrichAndBroadcastMessageStatus(changed.rows);
-    res.json({ messages: result.rows.map(mapMessageRow), canMessage: true, isGroup: true });
-  } catch (error) {
-    console.error('conversation messages error', error);
-    res.status(500).json({ error: 'Не удалось получить сообщения беседы' });
   }
 });
 
@@ -804,83 +624,74 @@ app.delete('/api/messages/:messageId', async (req, res) => {
 });
 
 
-app.post('/api/messages/upload', upload.array('files', 10), async (req, res) => {
+app.post('/api/messages/upload', upload.single('file'), async (req, res) => {
   try {
     const senderId = String(req.body?.currentUserId || '');
     const recipientId = String(req.body?.recipientId || '');
-    const conversationId = String(req.body?.conversationId || '');
     const text = String(req.body?.text || '').trim();
-    const files = Array.isArray(req.files) ? req.files.slice(0, 10) : [];
+    const file = req.file;
 
-    if (!senderId) return res.status(400).json({ error: 'Не найден отправитель' });
-    if (!recipientId && !conversationId) return res.status(400).json({ error: 'Не выбран получатель' });
-    if (!files.length) return res.status(400).json({ error: 'Файлы не были загружены' });
+    if (!senderId || !recipientId) {
+      return res.status(400).json({ error: 'Не выбран получатель' });
+    }
+    if (!file) {
+      return res.status(400).json({ error: 'Файл не был загружен' });
+    }
 
     const sender = await getUserById(senderId);
-    if (!sender) return res.status(404).json({ error: 'Пользователь не найден' });
-
-    let conversation = null;
-    let members = [];
-    let directRecipient = null;
-    if (conversationId) {
-      conversation = await getConversationById(conversationId);
-      if (!conversation || !await isConversationMember(conversationId, senderId)) return res.status(403).json({ error: 'Нет доступа к беседе' });
-      members = await getConversationMembers(conversationId);
-    } else {
-      directRecipient = await getUserById(recipientId);
-      if (!directRecipient) return res.status(404).json({ error: 'Пользователь не найден' });
-      if (await areUsersBlocked(sender.id, directRecipient.id)) return res.status(403).json({ error: 'Отправка сообщений недоступна' });
+    const recipient = await getUserById(recipientId);
+    if (!sender || !recipient) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    if (await areUsersBlocked(sender.id, recipient.id)) {
+      return res.status(403).json({ error: 'Отправка сообщений недоступна' });
     }
 
-    const albumId = files.length > 1 ? crypto.randomUUID() : '';
-    const createdMessages = [];
-
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index];
-      const isSupported = /^image\//.test(file.mimetype) || /^video\//.test(file.mimetype);
-      if (!isSupported) continue;
-      const attachmentType = /^image\//.test(file.mimetype) ? 'image' : 'video';
-      const attachmentUrl = `/uploads/${file.filename}`;
-      const messageId = crypto.randomUUID();
-      if (conversation) {
-        const recipients = members.filter((m) => String(m.id) !== String(sender.id));
-        for (const member of recipients) {
-          await query(
-            `INSERT INTO messages (id, shared_id, dialog_id, conversation_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, album_id, album_index)
-             VALUES ($1, $2, '', $3, $4, $5, $6, $7, NULL, NULL, NULL, $8, $9, $10, $11, $12)`,
-            [crypto.randomUUID(), messageId, conversation.id, index === 0 ? text : '', sender.id, member.id, onlineUsers.has(String(member.id)) ? new Date().toISOString() : null, attachmentUrl, attachmentType, file.originalname || file.filename, albumId, index]
-          );
-        }
-        const synthetic = {
-          id: messageId, shared_id: messageId, dialog_id: '', conversation_id: conversation.id, text: index === 0 ? text : '', sender_id: sender.id, recipient_id: sender.id, created_at: new Date().toISOString(), delivered_at: null, read_at: null, edited_at: null, deleted_at: null, attachment_url: attachmentUrl, attachment_type: attachmentType, attachment_name: file.originalname || file.filename, sender_name: sender.name, sender_phone: sender.phone, recipient_name: '', recipient_phone: '', album_id: albumId, album_index: index
-        };
-        createdMessages.push(mapMessageRow(synthetic));
-      } else {
-        const dialogId = makeDialogId(sender.id, directRecipient.id);
-        await query(
-          `INSERT INTO messages (id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, album_id, album_index)
-           VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9, $10, $11)`,
-          [messageId, dialogId, index === 0 ? text : '', sender.id, directRecipient.id, onlineUsers.has(String(directRecipient.id)) ? new Date().toISOString() : null, attachmentUrl, attachmentType, file.originalname || file.filename, albumId, index]
-        );
-        const fullMessage = await query(
-          `SELECT m.*, su.name AS sender_name, su.phone AS sender_phone, ru.name AS recipient_name, ru.phone AS recipient_phone
-           FROM messages m
-           INNER JOIN users su ON su.id = m.sender_id
-           INNER JOIN users ru ON ru.id = m.recipient_id
-           WHERE m.id = $1`,
-          [messageId]
-        );
-        createdMessages.push(mapMessageRow(fullMessage.rows[0]));
-      }
+    const isSupported = /^image\//.test(file.mimetype) || /^video\//.test(file.mimetype);
+    if (!isSupported) {
+      return res.status(400).json({ error: 'Можно отправлять только фото и видео' });
     }
 
-    if (conversation) {
-      const memberIds = members.map((m) => String(m.id));
-      createdMessages.forEach((message) => memberIds.forEach((userId) => io.to(`user:${userId}`).emit('conversation-message', message)));
-    } else {
-      createdMessages.forEach((message) => io.to(`user:${sender.id}`).to(`user:${directRecipient.id}`).emit('private-message', message));
-    }
-    res.json({ messages: createdMessages });
+    const dialogId = makeDialogId(sender.id, recipient.id);
+    const recipientOnline = onlineUsers.has(String(recipient.id));
+    const messageId = crypto.randomUUID();
+    const attachmentType = /^image\//.test(file.mimetype) ? 'image' : 'video';
+    const attachmentUrl = `/uploads/${file.filename}`;
+
+    await query(
+      `INSERT INTO messages (
+        id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name
+      ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9)`,
+      [
+        messageId,
+        dialogId,
+        text,
+        String(sender.id),
+        String(recipient.id),
+        recipientOnline ? new Date().toISOString() : null,
+        attachmentUrl,
+        attachmentType,
+        file.originalname || file.filename
+      ]
+    );
+
+    const fullMessage = await query(
+      `SELECT
+          m.*,
+          su.name AS sender_name,
+          su.phone AS sender_phone,
+          ru.name AS recipient_name,
+          ru.phone AS recipient_phone
+       FROM messages m
+       INNER JOIN users su ON su.id = m.sender_id
+       INNER JOIN users ru ON ru.id = m.recipient_id
+       WHERE m.id = $1`,
+      [messageId]
+    );
+
+    const message = mapMessageRow(fullMessage.rows[0]);
+    io.to(`user:${sender.id}`).to(`user:${recipient.id}`).emit('private-message', message);
+    res.json({ message });
   } catch (error) {
     console.error('message upload error', error);
     res.status(500).json({ error: 'Не удалось отправить файл' });
@@ -941,56 +752,6 @@ io.on('connection', (socket) => {
       await enrichAndBroadcastMessageStatus(changed.rows);
     } catch (error) {
       console.error('open-dialog error', error);
-    }
-  });
-
-  socket.on('open-conversation', async ({ currentUserId, conversationId }) => {
-    try {
-      const currentId = String(currentUserId || '');
-      const convId = String(conversationId || '');
-      if (!currentId || !convId || !await isConversationMember(convId, currentId)) return;
-      const changed = await query(
-        `UPDATE messages
-         SET delivered_at = COALESCE(delivered_at, NOW()),
-             read_at = COALESCE(read_at, NOW())
-         WHERE conversation_id = $1 AND recipient_id = $2 AND deleted_at IS NULL AND (delivered_at IS NULL OR read_at IS NULL)
-         RETURNING *`,
-        [convId, currentId]
-      );
-      await enrichAndBroadcastMessageStatus(changed.rows);
-    } catch (error) {
-      console.error('open-conversation error', error);
-    }
-  });
-
-  socket.on('send-message', async (payload) => {
-    try {
-      const activeUser = socket.data.user;
-      if (!activeUser || !payload?.text?.trim()) return;
-      const sender = await getUserById(activeUser.id);
-      if (!sender) return;
-      if (payload.conversationId) {
-        const conversation = await getConversationById(payload.conversationId);
-        if (!conversation || !await isConversationMember(conversation.id, sender.id)) return;
-        const members = await getConversationMembers(conversation.id);
-        const createdAt = new Date().toISOString();
-        const syntheticId = crypto.randomUUID();
-        for (const member of members) {
-          if (String(member.id) === String(sender.id)) continue;
-          const id = crypto.randomUUID();
-          await query(
-            `INSERT INTO messages (id, shared_id, dialog_id, conversation_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at)
-             VALUES ($1, $2, '', $3, $4, $5, $6, $7, NULL, NULL, NULL)`,
-            [id, syntheticId, conversation.id, String(payload.text).trim(), sender.id, member.id, onlineUsers.has(String(member.id)) ? createdAt : null]
-          );
-        }
-        const synthetic = mapMessageRow({ id: syntheticId, shared_id: syntheticId, dialog_id: '', conversation_id: conversation.id, text: String(payload.text).trim(), sender_id: sender.id, recipient_id: sender.id, created_at: createdAt, delivered_at: null, read_at: null, edited_at: null, deleted_at: null, sender_name: sender.name, sender_phone: sender.phone, recipient_name: '', recipient_phone: '', attachment_url: '', attachment_type: '', attachment_name: '', album_id: '', album_index: 0 });
-        members.forEach((member) => io.to(`user:${member.id}`).emit('conversation-message', synthetic));
-      } else if (payload.recipientId) {
-        socket.emit('send-private-message', payload);
-      }
-    } catch (error) {
-      console.error('send-message error', error);
     }
   });
 
