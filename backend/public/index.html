@@ -71,6 +71,7 @@
               <div class="header-subtitle" id="dialogSubtitle">Личные сообщения в реальном времени</div>
             </div>
             <div class="chat-header-actions">
+              <button class="ghost-btn hidden" id="suggestAvatarBtn" type="button">Предложить аватарку</button>
               <button class="ghost-btn hidden" id="addGroupMembersBtn" type="button">Добавить людей</button>
               <button class="ghost-btn hidden" id="renameDialogBtn" type="button">Переименовать</button>
               <button class="ghost-btn danger-btn hidden" id="blockToggleBtn" type="button"></button>
@@ -89,7 +90,8 @@
           <div class="chat hidden" id="chat"></div>
 
           <div class="input-area hidden" id="inputArea">
-            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*,audio/*" multiple />
+            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*,audio/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.pdf,.txt,.odt,.ods,.odp" multiple />
+            <input id="avatarSuggestionInput" class="hidden-file-input" type="file" accept="image/*" />
             <div class="composer-row" id="composerTextRow">
               <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить файл" aria-label="Прикрепить файл">+</button>
               <button class="attach-btn" id="voiceRecordBtn" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение"></button>

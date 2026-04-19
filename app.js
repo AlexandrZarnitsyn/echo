@@ -88,6 +88,8 @@ const groupNameWrap = document.getElementById('groupNameWrap');
 const cancelGroupBtn = document.getElementById('cancelGroupBtn');
 const saveGroupBtn = document.getElementById('saveGroupBtn');
 const addGroupMembersBtn = document.getElementById('addGroupMembersBtn');
+const suggestAvatarBtn = document.getElementById('suggestAvatarBtn');
+const avatarSuggestionInput = document.getElementById('avatarSuggestionInput');
 
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
@@ -105,6 +107,45 @@ function apiUrl(path) {
 function createClientMessageId(prefix = 'msg') {
   if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+
+const OFFICE_FILE_EXTENSIONS = ['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.rtf', '.pdf', '.txt', '.odt', '.ods', '.odp'];
+
+function isOfficeFile(file) {
+  if (!file) return false;
+  const mime = String(file.type || '').toLowerCase();
+  const name = String(file.name || '').toLowerCase();
+  return mime.includes('word')
+    || mime.includes('excel')
+    || mime.includes('powerpoint')
+    || mime.includes('officedocument')
+    || mime.includes('opendocument')
+    || mime === 'application/pdf'
+    || mime === 'application/msword'
+    || mime === 'text/plain'
+    || mime === 'application/rtf'
+    || mime === 'text/rtf'
+    || OFFICE_FILE_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+function getAttachmentKind(file) {
+  if (!file) return '';
+  if (String(file.type || '').startsWith('image/')) return 'image';
+  if (String(file.type || '').startsWith('video/')) return 'video';
+  if (String(file.type || '').startsWith('audio/')) return 'audio';
+  if (isOfficeFile(file)) return 'document';
+  return '';
+}
+
+function getDocumentLabel(name = '') {
+  const lower = String(name).toLowerCase();
+  if (lower.endsWith('.doc') || lower.endsWith('.docx') || lower.endsWith('.odt') || lower.endsWith('.rtf')) return 'DOC';
+  if (lower.endsWith('.xls') || lower.endsWith('.xlsx') || lower.endsWith('.ods')) return 'XLS';
+  if (lower.endsWith('.ppt') || lower.endsWith('.pptx') || lower.endsWith('.odp')) return 'PPT';
+  if (lower.endsWith('.pdf')) return 'PDF';
+  if (lower.endsWith('.txt')) return 'TXT';
+  return 'FILE';
 }
 
 async function parseApiResponse(response) {
@@ -307,6 +348,8 @@ function describeMessagePreview(message) {
   if (message.attachmentType === 'image') return message.text ? `Фото · ${message.text}` : 'Фото';
   if (message.attachmentType === 'video') return message.text ? `Видео · ${message.text}` : 'Видео';
   if (message.attachmentType === 'audio') return message.text ? `Голосовое · ${message.text}` : 'Голосовое сообщение';
+  if (message.attachmentType === 'document') return message.text ? `Файл · ${message.text}` : 'Файл';
+  if (message.attachmentType === 'avatar_suggestion') return message.text ? `Предложение аватарки · ${message.text}` : 'Предложение аватарки';
   return message.text || 'Новое сообщение';
 }
 
@@ -516,6 +559,10 @@ function createAttachmentPreviewElement(file) {
     mediaNode.className = 'attachment-preview-media';
     mediaNode.src = previewUrl;
     mediaNode.controls = true;
+  } else if (getAttachmentKind(file) === 'document') {
+    mediaNode = document.createElement('div');
+    mediaNode.className = 'attachment-preview-file-card';
+    mediaNode.innerHTML = `<div class="attachment-preview-file-icon">${getDocumentLabel(file.name)}</div><div class="attachment-preview-file-meta"><strong>${file.name || 'Документ'}</strong><span>${formatAttachmentSize(file)}</span></div>`;
   } else {
     mediaNode = document.createElement('img');
     mediaNode.className = 'attachment-preview-media';
@@ -531,17 +578,29 @@ function renderAttachmentThumbs() {
   if (!attachmentModalThumbs) return;
   attachmentModalThumbs.innerHTML = '';
   pendingAttachments.forEach((file, index) => {
-    const thumb = document.createElement(file.type.startsWith('video/') ? 'video' : 'img');
-    thumb.className = `attachment-thumb ${index === pendingAttachmentIndex ? 'active' : ''}`;
-    const thumbUrl = URL.createObjectURL(file);
-    thumb.dataset.previewUrl = thumbUrl;
-    thumb.src = thumbUrl;
-    if (thumb.tagName === 'VIDEO') {
+    const kind = getAttachmentKind(file);
+    let thumb;
+    if (kind === 'video') {
+      thumb = document.createElement('video');
+      const thumbUrl = URL.createObjectURL(file);
+      thumb.dataset.previewUrl = thumbUrl;
+      thumb.src = thumbUrl;
       thumb.muted = true;
       thumb.playsInline = true;
       thumb.preload = 'metadata';
+    } else if (kind === 'document' || kind === 'audio') {
+      thumb = document.createElement('button');
+      thumb.type = 'button';
+      thumb.className = 'attachment-thumb attachment-thumb-file';
+      thumb.textContent = kind === 'audio' ? '🎤' : getDocumentLabel(file.name);
+    } else {
+      thumb = document.createElement('img');
+      const thumbUrl = URL.createObjectURL(file);
+      thumb.dataset.previewUrl = thumbUrl;
+      thumb.src = thumbUrl;
+      thumb.alt = file.name || `Файл ${index + 1}`;
     }
-    thumb.alt = file.name || `Файл ${index + 1}`;
+    thumb.className = `${thumb.className || 'attachment-thumb'} ${index === pendingAttachmentIndex ? 'active' : ''}`.trim();
     thumb.addEventListener('click', () => {
       pendingAttachmentIndex = index;
       renderPendingAttachmentPreview();
@@ -558,7 +617,7 @@ function renderPendingAttachmentPreview() {
   updateAttachmentPreviewControls();
   if (attachmentModalTitle) {
     if (pendingAttachments.length > 1) attachmentModalTitle.textContent = `Отправить файлы (${pendingAttachments.length})`;
-    else attachmentModalTitle.textContent = file.type.startsWith('video/') ? 'Отправить видео' : (file.type.startsWith('audio/') ? 'Отправить голосовое сообщение' : 'Отправить изображение');
+    else attachmentModalTitle.textContent = getAttachmentKind(file) === 'video' ? 'Отправить видео' : (getAttachmentKind(file) === 'audio' ? 'Отправить голосовое сообщение' : (getAttachmentKind(file) === 'document' ? 'Отправить документ' : 'Отправить изображение')); 
   }
 }
 
@@ -588,9 +647,9 @@ function setPendingAttachment(input) {
     closeAttachmentModal();
     return;
   }
-  const unsupported = files.find((file) => !(file.type.startsWith('image/') || file.type.startsWith('video/') || file.type.startsWith('audio/')));
+  const unsupported = files.find((file) => !getAttachmentKind(file));
   if (unsupported) {
-    alert('Можно отправлять фото, видео и голосовые сообщения');
+    alert('Можно отправлять фото, видео, голосовые и Office-файлы');
     return;
   }
   openAttachmentModal(files);
@@ -605,7 +664,9 @@ function stepAttachmentPreview(direction) {
 function formatAttachmentSize(file) {
   if (!file) return '';
   const mb = file.size / (1024 * 1024);
-  return `${file.type.startsWith('video/') ? 'Видео' : file.type.startsWith('audio/') ? 'Голосовое' : 'Фото'} · ${mb >= 1 ? mb.toFixed(1) + ' МБ' : Math.max(1, Math.round(file.size / 1024)) + ' КБ'}`;
+  const kind = getAttachmentKind(file);
+  const label = kind === 'video' ? 'Видео' : kind === 'audio' ? 'Голосовое' : kind === 'document' ? 'Документ' : 'Фото';
+  return `${label} · ${mb >= 1 ? mb.toFixed(1) + ' МБ' : Math.max(1, Math.round(file.size / 1024)) + ' КБ'}`;
 }
 
 function updateAttachmentSubtitle() {}
@@ -1185,6 +1246,85 @@ function createVoiceMessageNode(message, attachmentUrl, isMe) {
   return wrap;
 }
 
+
+function createDocumentAttachmentNode(message, attachmentUrl) {
+  const link = document.createElement('a');
+  link.className = 'message-file-card';
+  link.href = attachmentUrl;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.innerHTML = `<span class="message-file-icon">${getDocumentLabel(message.attachmentName || '')}</span><span class="message-file-meta"><strong>${message.attachmentName || 'Файл'}</strong><small>Нажмите, чтобы открыть</small></span>`;
+  return link;
+}
+
+function createAvatarSuggestionNode(message, attachmentUrl, isMe) {
+  const wrap = document.createElement('div');
+  wrap.className = 'avatar-suggestion-card';
+  const img = document.createElement('img');
+  img.className = 'avatar-suggestion-image';
+  img.src = attachmentUrl;
+  img.alt = message.attachmentName || 'Предложенная аватарка';
+  img.loading = 'lazy';
+  wrap.appendChild(img);
+  const note = document.createElement('div');
+  note.className = 'avatar-suggestion-note';
+  note.textContent = isMe ? 'Вы предложили эту фотографию как аватарку.' : 'Собеседник предлагает поставить эту фотографию на аватарку.';
+  wrap.appendChild(note);
+  const status = document.createElement('div');
+  status.className = 'avatar-suggestion-status';
+  const state = message.avatarSuggestionStatus || 'pending';
+  status.textContent = state === 'accepted' ? 'Аватарка установлена' : state === 'declined' ? 'Предложение отклонено' : 'Ожидает ответа';
+  wrap.appendChild(status);
+  if (!isMe && message.avatarSuggestionTargetUserId === currentUser?.id && state === 'pending') {
+    const actions = document.createElement('div');
+    actions.className = 'avatar-suggestion-actions';
+    const acceptBtn = document.createElement('button');
+    acceptBtn.type = 'button';
+    acceptBtn.className = 'primary-btn avatar-suggestion-btn';
+    acceptBtn.textContent = 'Поставить аватарку';
+    acceptBtn.addEventListener('click', async () => {
+      acceptBtn.disabled = true;
+      declineBtn.disabled = true;
+      try {
+        const response = await fetch(apiUrl(`/api/messages/${encodeURIComponent(message.id)}/avatar-suggestion-response`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentUserId: currentUser.id, action: 'accept' })
+        });
+        await parseApiResponse(response);
+      } catch (error) {
+        alert(error.message || 'Не удалось установить аватарку');
+        acceptBtn.disabled = false;
+        declineBtn.disabled = false;
+      }
+    });
+    const declineBtn = document.createElement('button');
+    declineBtn.type = 'button';
+    declineBtn.className = 'ghost-btn avatar-suggestion-btn';
+    declineBtn.textContent = 'Отклонить';
+    declineBtn.addEventListener('click', async () => {
+      acceptBtn.disabled = true;
+      declineBtn.disabled = true;
+      try {
+        const response = await fetch(apiUrl(`/api/messages/${encodeURIComponent(message.id)}/avatar-suggestion-response`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentUserId: currentUser.id, action: 'decline' })
+        });
+        await parseApiResponse(response);
+      } catch (error) {
+        alert(error.message || 'Не удалось отклонить предложение');
+        acceptBtn.disabled = false;
+        declineBtn.disabled = false;
+      }
+    });
+    actions.appendChild(acceptBtn);
+    actions.appendChild(declineBtn);
+    wrap.appendChild(actions);
+  }
+  return wrap;
+}
+
 function createMessageNode(message) {
   const node = document.createElement('div');
   const isMe = currentUser && message.senderId === currentUser.id;
@@ -1223,6 +1363,10 @@ function createMessageNode(message) {
       });
     } else if (message.attachmentType === 'audio') {
       mediaNode = createVoiceMessageNode(message, attachmentUrl, isMe);
+    } else if (message.attachmentType === 'document') {
+      mediaNode = createDocumentAttachmentNode(message, attachmentUrl);
+    } else if (message.attachmentType === 'avatar_suggestion') {
+      mediaNode = createAvatarSuggestionNode(message, attachmentUrl, isMe);
     } else {
       mediaNode = document.createElement('a');
       mediaNode.className = 'message-attachment-link';
@@ -1397,12 +1541,14 @@ function updateDialogHeader() {
     dialogSubtitle.textContent = 'Личные сообщения в реальном времени';
     backToDialogsBtn.classList.add('hidden');
     renameDialogBtn.classList.add('hidden');
+    suggestAvatarBtn?.classList.add('hidden');
     return;
   }
 
   dialogTitle.textContent = getDisplayName(currentDialogUser);
   renameDialogBtn.classList.toggle('hidden', currentDialogUser.type === 'group');
   addGroupMembersBtn?.classList.toggle('hidden', currentDialogUser.type !== 'group');
+  suggestAvatarBtn?.classList.toggle('hidden', currentDialogUser.type === 'group');
   if (currentDialogUser.type === 'group') {
     const count = Array.isArray(currentDialogUser.memberIds) ? currentDialogUser.memberIds.length : 0;
     dialogSubtitle.textContent = count > 0 ? `${count} участников` : 'Групповая беседа';
@@ -1657,6 +1803,30 @@ async function saveGroup() {
     if (data.group?.id) await selectDialog(data.group.id);
   } catch (error) {
     alert(error.message || (groupModalState.mode === 'add' ? 'Не удалось добавить участников' : 'Не удалось создать беседу'));
+  }
+}
+
+async function sendAvatarSuggestion(file) {
+  if (!file || !currentDialogUser || currentDialogUser.type === 'group') return;
+  if (!String(file.type || '').startsWith('image/')) {
+    alert('Для предложения аватарки можно выбрать только изображение');
+    return;
+  }
+  try {
+    const formData = new FormData();
+    formData.append('currentUserId', currentUser.id);
+    formData.append('recipientId', currentDialogUser.id);
+    formData.append('clientMessageId', createClientMessageId('avatar_suggestion'));
+    formData.append('photo', file);
+    const response = await fetch(apiUrl('/api/messages/avatar-suggestion'), {
+      method: 'POST',
+      body: formData
+    });
+    await parseApiResponse(response);
+  } catch (error) {
+    alert(error.message || 'Не удалось отправить предложение аватарки');
+  } finally {
+    if (avatarSuggestionInput) avatarSuggestionInput.value = '';
   }
 }
 
@@ -2045,6 +2215,15 @@ renameDialogBtn.addEventListener('click', renameCurrentDialogUser);
 if (messageAttachBtn) {
   messageAttachBtn.addEventListener('click', () => messageAttachmentInput.click());
 }
+if (suggestAvatarBtn) {
+  suggestAvatarBtn.addEventListener('click', () => avatarSuggestionInput?.click());
+}
+if (avatarSuggestionInput) {
+  avatarSuggestionInput.addEventListener('change', () => {
+    const file = avatarSuggestionInput.files?.[0];
+    if (file) sendAvatarSuggestion(file);
+  });
+}
 if (voiceRecordBtn) {
   voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
 }
@@ -2195,7 +2374,10 @@ document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   if (!profileModal.classList.contains('hidden')) {
     closeProfileModal();
-  closeGroupModal();
+    return;
+  }
+  if (!groupModal.classList.contains('hidden')) {
+    closeGroupModal();
     return;
   }
   if (currentDialogUser) {

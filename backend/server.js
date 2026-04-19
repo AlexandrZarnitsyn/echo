@@ -88,7 +88,9 @@ function mapMessageRow(row) {
     groupId: row.group_id || '',
     groupName: row.group_name || '',
     isGroup: Boolean(row.group_id),
-    audioListened: row.audio_listened === true || row.audio_listened === 't' || row.audio_listened === 1
+    audioListened: row.audio_listened === true || row.audio_listened === 't' || row.audio_listened === 1,
+    avatarSuggestionStatus: row.avatar_suggestion_status || '',
+    avatarSuggestionTargetUserId: row.avatar_suggestion_target_user_id ? String(row.avatar_suggestion_target_user_id) : ''
   };
 }
 
@@ -201,6 +203,15 @@ async function initDatabase() {
     );
   `);
 
+  await query(`
+    CREATE TABLE IF NOT EXISTS avatar_suggestions (
+      message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      target_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      responded_at TIMESTAMPTZ NULL
+    );
+  `);
+
   await query('CREATE INDEX IF NOT EXISTS idx_messages_dialog_id_created_at ON messages(dialog_id, created_at DESC);');
   await query('CREATE INDEX IF NOT EXISTS idx_messages_recipient_unread ON messages(recipient_id, read_at, deleted_at);');
   await query('CREATE INDEX IF NOT EXISTS idx_messages_group_created_at ON messages(group_id, created_at DESC);');
@@ -261,6 +272,39 @@ async function getEligibleDialogUsers(currentUserId, { excludeGroupId = '' } = {
   return result.rows.map((row) => publicUser(mapUserRow(row), currentUserId));
 }
 
+
+const OFFICE_MIME_TYPES = new Set([
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-powerpoint.presentation.macroenabled.12',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+  'application/vnd.ms-word.document.macroenabled.12',
+  'application/rtf',
+  'text/rtf',
+  'application/pdf',
+  'text/plain',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation'
+]);
+
+const OFFICE_EXTENSIONS = new Set(['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.rtf', '.pdf', '.txt', '.odt', '.ods', '.odp']);
+
+function detectAttachmentType(file) {
+  const mime = String(file?.mimetype || '').toLowerCase();
+  const originalName = String(file?.originalname || '');
+  const ext = path.extname(originalName).toLowerCase();
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (OFFICE_MIME_TYPES.has(mime) || OFFICE_EXTENSIONS.has(ext)) return 'document';
+  return '';
+}
+
 async function getFullMessageById(messageId) {
   const result = await query(
     `SELECT
@@ -269,11 +313,14 @@ async function getFullMessageById(messageId) {
         su.phone AS sender_phone,
         ru.name AS recipient_name,
         ru.phone AS recipient_phone,
-        g.name AS group_name
+        g.name AS group_name,
+        avs.status AS avatar_suggestion_status,
+        avs.target_user_id AS avatar_suggestion_target_user_id
      FROM messages m
      INNER JOIN users su ON su.id = m.sender_id
      LEFT JOIN users ru ON ru.id = m.recipient_id
      LEFT JOIN groups g ON g.id = m.group_id
+     LEFT JOIN avatar_suggestions avs ON avs.message_id = m.id
      WHERE m.id = $1`,
     [String(messageId)]
   );
@@ -848,10 +895,13 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
                 FROM message_audio_plays map
                 WHERE map.message_id = m.id
                   AND map.user_id = $2
-              ) AS audio_listened
+              ) AS audio_listened,
+              avs.status AS avatar_suggestion_status,
+              avs.target_user_id AS avatar_suggestion_target_user_id
        FROM messages m
        INNER JOIN users su ON su.id = m.sender_id
        INNER JOIN groups g ON g.id = m.group_id
+       LEFT JOIN avatar_suggestions avs ON avs.message_id = m.id
        WHERE m.group_id = $1
        ORDER BY m.created_at ASC`,
       [groupId, currentUserId]
@@ -948,10 +998,13 @@ app.get('/api/messages/:otherUserId', async (req, res) => {
                 WHEN m.sender_id = $2 THEN m.recipient_id
                 ELSE $2
               END
-          ) AS audio_listened
+          ) AS audio_listened,
+          avs.status AS avatar_suggestion_status,
+          avs.target_user_id AS avatar_suggestion_target_user_id
        FROM messages m
        INNER JOIN users su ON su.id = m.sender_id
        INNER JOIN users ru ON ru.id = m.recipient_id
+       LEFT JOIN avatar_suggestions avs ON avs.message_id = m.id
        WHERE m.dialog_id = $1
        ORDER BY m.created_at ASC`,
       [dialogId, currentUserId]
@@ -1096,14 +1149,13 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
       deliveredAt = onlineUsers.has(String(recipient.id)) ? new Date().toISOString() : null;
     }
 
-    const isSupported = /^image\//.test(file.mimetype) || /^video\//.test(file.mimetype) || /^audio\//.test(file.mimetype);
-    if (!isSupported) {
-      return res.status(400).json({ error: 'Можно отправлять фото, видео и голосовые сообщения' });
+    const attachmentType = detectAttachmentType(file);
+    if (!attachmentType) {
+      return res.status(400).json({ error: 'Можно отправлять фото, видео, голосовые и Office-файлы' });
     }
 
     const messageId = crypto.randomUUID();
     const mediaId = crypto.randomUUID();
-    const attachmentType = /^image\//.test(file.mimetype) ? 'image' : /^video\//.test(file.mimetype) ? 'video' : 'audio';
 
     await query(
       `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
@@ -1146,6 +1198,119 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
       return res.status(507).json({ error: 'На сервере закончилось место для временных файлов' });
     }
     return res.status(500).json({ error: error.message || 'Не удалось отправить файл' });
+  }
+});
+
+
+app.post('/api/messages/avatar-suggestion', memoryUpload.single('photo'), async (req, res) => {
+  try {
+    const senderId = String(req.body?.currentUserId || '');
+    const recipientId = String(req.body?.recipientId || '');
+    const text = String(req.body?.text || '').trim();
+    const clientMessageId = String(req.body?.clientMessageId || '').trim() || null;
+    const file = req.file;
+    if (!senderId || !recipientId) return res.status(400).json({ error: 'Не выбран получатель' });
+    if (!file) return res.status(400).json({ error: 'Фото не загружено' });
+    if (!String(file.mimetype || '').startsWith('image/')) return res.status(400).json({ error: 'Для предложения аватарки можно выбрать только изображение' });
+
+    const sender = await getUserById(senderId);
+    const recipient = await getUserById(recipientId);
+    if (!sender || !recipient) return res.status(404).json({ error: 'Пользователь не найден' });
+    if (await areUsersBlocked(sender.id, recipient.id)) return res.status(403).json({ error: 'Отправка сообщений недоступна' });
+
+    const dialogId = makeDialogId(sender.id, recipient.id);
+    const messageId = crypto.randomUUID();
+    const mediaId = crypto.randomUUID();
+    const deliveredAt = onlineUsers.has(String(recipient.id)) ? new Date().toISOString() : null;
+
+    await query(
+      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [mediaId, String(sender.id), String(file.mimetype || 'application/octet-stream'), String(file.originalname || ''), Number(file.size || 0), file.buffer]
+    );
+
+    try {
+      await query(
+        `INSERT INTO messages (
+          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, media_id, client_message_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, '', 'avatar_suggestion', $7, $8, $9)`,
+        [messageId, dialogId, text, String(sender.id), String(recipient.id), deliveredAt, file.originalname || '', mediaId, clientMessageId]
+      );
+    } catch (insertError) {
+      if (String(insertError?.code || '') === '23505' && clientMessageId) {
+        await query('DELETE FROM media_files WHERE id = $1', [mediaId]).catch(() => null);
+        const existing = await query(
+          'SELECT id FROM messages WHERE sender_id = $1 AND dialog_id = $2 AND client_message_id = $3 LIMIT 1',
+          [String(sender.id), dialogId, clientMessageId]
+        );
+        const existingId = existing.rows[0]?.id;
+        if (existingId) {
+          const existingMessage = await getFullMessageById(existingId);
+          return res.json({ message: existingMessage, duplicate: true });
+        }
+      }
+      throw insertError;
+    }
+
+    await query(
+      `INSERT INTO avatar_suggestions (message_id, target_user_id, status)
+       VALUES ($1, $2, 'pending')`,
+      [messageId, String(recipient.id)]
+    );
+
+    const message = await getFullMessageById(messageId);
+    await broadcastMessageEvent('private-message', message);
+    res.json({ message });
+  } catch (error) {
+    console.error('avatar suggestion send error', error);
+    return res.status(500).json({ error: error.message || 'Не удалось отправить предложение аватарки' });
+  }
+});
+
+app.post('/api/messages/:messageId/avatar-suggestion-response', async (req, res) => {
+  try {
+    const currentUserId = String(req.body?.currentUserId || '');
+    const action = String(req.body?.action || '').toLowerCase();
+    const messageId = String(req.params.messageId || '');
+    if (!currentUserId || !messageId || !['accept', 'decline'].includes(action)) return res.status(400).json({ error: 'Недостаточно данных' });
+
+    const result = await query(
+      `SELECT m.*, avs.target_user_id, avs.status
+       FROM messages m
+       INNER JOIN avatar_suggestions avs ON avs.message_id = m.id
+       WHERE m.id = $1
+       LIMIT 1`,
+      [messageId]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Предложение не найдено' });
+    const message = result.rows[0];
+    if (String(message.target_user_id) != currentUserId) return res.status(403).json({ error: 'Вы не можете отвечать на это предложение' });
+    if (String(message.status) !== 'pending') {
+      const payload = await getFullMessageById(messageId);
+      return res.json({ message: payload, alreadyHandled: true });
+    }
+
+    const nextStatus = action === 'accept' ? 'accepted' : 'declined';
+    await query(
+      `UPDATE avatar_suggestions
+       SET status = $2, responded_at = NOW()
+       WHERE message_id = $1`,
+      [messageId, nextStatus]
+    );
+
+    if (action === 'accept' && message.media_id) {
+      await query('UPDATE users SET photo = $2 WHERE id = $1', [currentUserId, `/api/media/${message.media_id}`]);
+      const updatedUser = await getUserById(currentUserId);
+      const blockedUserIds = await getBlockedIds(currentUserId);
+      io.emit('user:updated', publicUser(updatedUser, currentUserId, blockedUserIds));
+    }
+
+    const payload = await getFullMessageById(messageId);
+    await broadcastMessageEvent('message:updated', payload);
+    res.json({ message: payload });
+  } catch (error) {
+    console.error('avatar suggestion response error', error);
+    return res.status(500).json({ error: error.message || 'Не удалось обработать предложение аватарки' });
   }
 });
 
