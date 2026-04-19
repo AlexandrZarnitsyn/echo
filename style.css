@@ -196,6 +196,17 @@ body {
   flex-shrink: 0;
 }
 
+.default-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #2563eb;
+  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  user-select: none;
+}
+
 .profile-avatar.large {
   width: 84px;
   height: 84px;
@@ -523,10 +534,14 @@ body {
 .modal-card {
   width: 100%;
   max-width: 420px;
+  max-height: min(760px, calc(100vh - 40px));
   background: #fff;
   border-radius: 20px;
   padding: 22px;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .modal-title {
@@ -545,6 +560,12 @@ body {
 .readonly-field {
   background: #f8fafc;
   color: #111827;
+}
+
+.settings-panel {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .settings-toggle {
@@ -578,6 +599,24 @@ body {
   line-height: 1.4;
 }
 
+.settings-toggle.is-disabled {
+  opacity: 0.58;
+}
+
+.accent-toggle {
+  border-color: #bfdbfe;
+  background: linear-gradient(to bottom, #f8fbff, #eef5ff);
+}
+
+.modal-footer {
+  position: sticky;
+  bottom: 0;
+  margin-top: 16px;
+  padding-top: 14px;
+  background: linear-gradient(to top, rgba(255,255,255,0.98), rgba(255,255,255,0.9));
+  backdrop-filter: blur(10px);
+}
+
 .modal-actions {
   display: flex;
   gap: 10px;
@@ -590,7 +629,7 @@ body {
 
 .clickable-avatar { cursor: pointer; }
 .clickable-avatar:hover { box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
-.logout-in-modal { width: 100%; margin-top: 10px; background: #f8fafc; color: #dc2626; }
+.logout-in-modal { width: 100%; margin-top: 10px; background: #f8fafc; color: #dc2626; position: sticky; bottom: 0; }
 .logout-in-modal:hover { background: #fee2e2; }
 
 .back-btn {
@@ -1108,6 +1147,10 @@ body[data-theme="dark"] .search-box input:focus {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
 }
 
+body[data-theme="dark"] .modal-footer {
+  background: linear-gradient(to top, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.88));
+}
+
 body[data-theme="dark"] .logout-in-modal {
   background: #111827;
   color: #fda4af;
@@ -1158,4 +1201,10 @@ body[data-theme="dark"] .avatar-upload-btn:hover {
 body[data-theme="dark"] .avatar-upload-icon {
   background: #1e3a8a;
   color: #dbeafe;
+}
+
+body[data-theme="dark"] .default-avatar {
+  color: #dbeafe;
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  border-color: rgba(59, 130, 246, 0.35);
 }

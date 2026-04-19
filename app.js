@@ -27,6 +27,9 @@ const saveProfileBtn = document.getElementById('saveProfileBtn');
 const profileNameInput = document.getElementById('profileNameInput');
 const profilePhonePreview = document.getElementById('profilePhonePreview');
 const showPhoneToggle = document.getElementById('showPhoneToggle');
+const soundToggle = document.getElementById('soundToggle');
+const soundToggleWrap = document.getElementById('soundToggleWrap');
+const silentModeToggle = document.getElementById('silentModeToggle');
 const profilePhotoInput = document.getElementById('profilePhotoInput');
 const profilePreviewAvatar = document.getElementById('profilePreviewAvatar');
 const avatarUploadText = document.getElementById('avatarUploadText');
@@ -60,6 +63,8 @@ let onlineUserIds = new Set();
 let socket = null;
 let blacklistUsers = [];
 let editingMessageId = null;
+let notificationPrefs = { soundEnabled: true, silentMode: false };
+let audioContextRef = null;
 let currentDialogState = {
   canMessage: true,
   isBlocked: false,
@@ -70,6 +75,7 @@ let shouldStickToBottom = true;
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
 const THEME_STORAGE_KEY = 'messengerTheme';
+const NOTIFICATION_PREFS_KEY = 'messengerNotificationPrefs';
 
 function applyTheme(theme = 'dark') {
   const normalizedTheme = theme === 'light' ? 'light' : 'dark';
@@ -160,13 +166,30 @@ function resolveAssetUrl(value = '') {
 }
 
 function getAvatar(user) {
-  return (user && user.photo) ? resolveAssetUrl(user.photo) : DEFAULT_AVATAR;
+  return (user && user.photo) ? resolveAssetUrl(user.photo) : '';
+}
+
+function getUserInitials(user) {
+  const source = (getDisplayName(user) || user?.name || user?.phone || 'U').trim();
+  return source
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase() || 'U';
 }
 
 function getAvatarImgMarkup(user, className = 'profile-avatar', alt = 'avatar') {
   const safeAlt = String(alt).replace(/"/g, '&quot;');
   const safeClass = String(className).replace(/"/g, '&quot;');
-  return `<img class="${safeClass}" src="${getAvatar(user)}" alt="${safeAlt}" onerror="this.onerror=null;this.src='${DEFAULT_AVATAR}'" />`;
+  const avatarUrl = getAvatar(user);
+
+  if (!avatarUrl) {
+    return `<div class="${safeClass} default-avatar" aria-label="${safeAlt}">${getUserInitials(user)}</div>`;
+  }
+
+  return `<img class="${safeClass}" src="${avatarUrl}" alt="${safeAlt}" loading="lazy" data-fallback-text="${getUserInitials(user)}" onerror="this.onerror=null;const fallback=document.createElement('div');fallback.className=this.className+' default-avatar';fallback.setAttribute('aria-label', this.alt || 'avatar');fallback.textContent=this.dataset.fallbackText||'U';this.replaceWith(fallback);" />`;
 }
 
 function formatPhoneForDisplay(phone = '') {
@@ -184,8 +207,95 @@ function formatPreview(user) {
 
 function renderCurrentUser() {
   currentUserText.textContent = `${currentUser.name} · ${formatPhoneForDisplay(currentUser.phone)}`;
-  currentUserAvatar.src = getAvatar(currentUser);
+  currentUserAvatar.src = getAvatar(currentUser) || DEFAULT_AVATAR;
   currentUserAvatar.onerror = () => { currentUserAvatar.onerror = null; currentUserAvatar.src = DEFAULT_AVATAR; };
+}
+
+function loadNotificationPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(NOTIFICATION_PREFS_KEY) || '{}');
+    notificationPrefs = {
+      soundEnabled: saved.soundEnabled !== false,
+      silentMode: Boolean(saved.silentMode)
+    };
+  } catch {
+    notificationPrefs = { soundEnabled: true, silentMode: false };
+  }
+}
+
+function saveNotificationPrefs() {
+  localStorage.setItem(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPrefs));
+}
+
+function syncNotificationControls() {
+  if (soundToggle) soundToggle.checked = notificationPrefs.soundEnabled;
+  if (silentModeToggle) silentModeToggle.checked = notificationPrefs.silentMode;
+  if (soundToggleWrap) soundToggleWrap.classList.toggle('is-disabled', notificationPrefs.silentMode);
+  if (soundToggle) soundToggle.disabled = notificationPrefs.silentMode;
+}
+
+function shouldMuteNotifications() {
+  return Boolean(notificationPrefs.silentMode);
+}
+
+function playNotificationSound() {
+  if (shouldMuteNotifications() || !notificationPrefs.soundEnabled) return;
+
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+
+  try {
+    if (!audioContextRef) audioContextRef = new AudioContextClass();
+    if (audioContextRef.state === 'suspended') audioContextRef.resume();
+
+    const oscillator = audioContextRef.createOscillator();
+    const gainNode = audioContextRef.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(880, audioContextRef.currentTime);
+    gainNode.gain.setValueAtTime(0.0001, audioContextRef.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.06, audioContextRef.currentTime + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioContextRef.currentTime + 0.22);
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContextRef.destination);
+    oscillator.start();
+    oscillator.stop(audioContextRef.currentTime + 0.24);
+  } catch {}
+}
+
+async function showBrowserNotification(message) {
+  if (shouldMuteNotifications() || !message || message.senderId === currentUser?.id) return;
+  if (!('Notification' in window)) return;
+
+  if (Notification.permission === 'default') {
+    try {
+      await Notification.requestPermission();
+    } catch {}
+  }
+
+  if (Notification.permission !== 'granted') return;
+
+  const sender = users.find((item) => item.id === message.senderId) || currentDialogUser || { name: message.senderName };
+  const body = message.deletedAt ? 'Сообщение удалено' : (message.text || 'Новое сообщение');
+  const notification = new Notification(getDisplayName(sender) || message.senderName || 'Новое сообщение', {
+    body,
+    icon: getAvatar(sender) || DEFAULT_AVATAR,
+    badge: getAvatar(sender) || DEFAULT_AVATAR,
+    tag: `dialog-${message.dialogId}`,
+    renotify: false
+  });
+  notification.onclick = () => {
+    window.focus();
+    if (sender?.id) selectDialog(sender.id);
+    notification.close();
+  };
+}
+
+function handleIncomingNotification(message, isCurrentDialog) {
+  if (!message || message.senderId === currentUser?.id || shouldMuteNotifications()) return;
+  const shouldNotify = document.hidden || !isCurrentDialog;
+  if (!shouldNotify) return;
+  playNotificationSound();
+  showBrowserNotification(message);
 }
 
 function renderUsers() {
@@ -526,6 +636,7 @@ function setupSocket() {
       addMessage(message);
       socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
     }
+    handleIncomingNotification(message, Boolean(isCurrentDialog));
     await loadUsers();
   });
 
@@ -736,7 +847,8 @@ function openProfileModal() {
   profileNameInput.value = currentUser?.name || '';
   profilePhonePreview.textContent = currentUser?.phone || '';
   showPhoneToggle.checked = currentUser?.showPhone !== false;
-  profilePreviewAvatar.src = getAvatar(currentUser);
+  syncNotificationControls();
+  profilePreviewAvatar.src = getAvatar(currentUser) || DEFAULT_AVATAR;
   profilePreviewAvatar.onerror = () => { profilePreviewAvatar.onerror = null; profilePreviewAvatar.src = DEFAULT_AVATAR; };
   profilePhotoInput.value = '';
   avatarUploadText.textContent = 'Выбрать аватарку';
@@ -768,6 +880,13 @@ async function saveProfile() {
     });
     const nameData = await nameResponse.json();
     if (!nameResponse.ok) throw new Error(nameData.error || 'Не удалось обновить профиль');
+
+    notificationPrefs = {
+      soundEnabled: soundToggle ? soundToggle.checked : true,
+      silentMode: silentModeToggle ? silentModeToggle.checked : false
+    };
+    saveNotificationPrefs();
+    syncNotificationControls();
 
     currentUser = nameData.user;
     localStorage.setItem('messengerCurrentUser', JSON.stringify(currentUser));
@@ -868,6 +987,19 @@ settingsTabs.forEach((tab) => {
   tab.addEventListener('click', () => switchSettingsTab(tab.dataset.tab));
 });
 
+if (silentModeToggle) {
+  silentModeToggle.addEventListener('change', () => {
+    notificationPrefs.silentMode = silentModeToggle.checked;
+    syncNotificationControls();
+  });
+}
+
+if (soundToggle) {
+  soundToggle.addEventListener('change', () => {
+    notificationPrefs.soundEnabled = soundToggle.checked;
+  });
+}
+
 if (themeSwitcher) {
   themeSwitcher.addEventListener('click', (event) => {
     const button = event.target.closest('.theme-option');
@@ -930,6 +1062,8 @@ window.addEventListener('resize', () => {
 
 window.addEventListener('load', async () => {
   loadSavedTheme();
+  loadNotificationPrefs();
+  syncNotificationControls();
   const savedUser = localStorage.getItem('messengerCurrentUser');
   if (!savedUser) return;
 

@@ -125,6 +125,22 @@
           </span>
         </label>
 
+        <label class="settings-toggle" id="soundToggleWrap">
+          <input id="soundToggle" type="checkbox" />
+          <span>
+            <strong>Звук уведомлений</strong>
+            <small>Короткий сигнал при новом сообщении от собеседника.</small>
+          </span>
+        </label>
+
+        <label class="settings-toggle accent-toggle">
+          <input id="silentModeToggle" type="checkbox" />
+          <span>
+            <strong>Бесшумный режим</strong>
+            <small>Отключает звук и всплывающие уведомления, пока режим включен.</small>
+          </span>
+        </label>
+
         <div class="theme-setting-card">
           <div class="theme-setting-head">
             <strong>Тема оформления</strong>
@@ -145,12 +161,14 @@
           </label>
         </div>
 
-        <div class="modal-actions">
-          <button class="ghost-btn" id="closeProfileBtn">Отмена</button>
-          <button class="primary-btn" id="saveProfileBtn">Сохранить</button>
-        </div>
+        <div class="modal-footer">
+          <div class="modal-actions">
+            <button class="ghost-btn" id="closeProfileBtn">Отмена</button>
+            <button class="primary-btn" id="saveProfileBtn">Сохранить</button>
+          </div>
 
-        <button class="ghost-btn logout-in-modal" id="logoutBtn">Выйти из аккаунта</button>
+          <button class="ghost-btn logout-in-modal" id="logoutBtn">Выйти из аккаунта</button>
+        </div>
       </div>
 
       <div class="settings-panel hidden" data-panel="blacklist">
