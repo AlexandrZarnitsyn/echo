@@ -18,9 +18,17 @@ const dialogSubtitle = document.getElementById('dialogSubtitle');
 const backToDialogsBtn = document.getElementById('backToDialogsBtn');
 const emptyState = document.getElementById('emptyState');
 const chat = document.getElementById('chat');
+const chatPanel = document.querySelector('.chat-panel');
 const inputArea = document.getElementById('inputArea');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
+const messageAttachBtn = document.getElementById('messageAttachBtn');
+const messageAttachmentInput = document.getElementById('messageAttachmentInput');
+const messageAttachmentPreview = document.getElementById('messageAttachmentPreview');
+const messageAttachmentName = document.getElementById('messageAttachmentName');
+const clearMessageAttachmentBtn = document.getElementById('clearMessageAttachmentBtn');
+const messageAttachmentPreviewMedia = document.getElementById('messageAttachmentPreviewMedia');
+const composerDropHint = document.getElementById('composerDropHint');
 const profileModal = document.getElementById('profileModal');
 const closeProfileBtn = document.getElementById('closeProfileBtn');
 const saveProfileBtn = document.getElementById('saveProfileBtn');
@@ -71,6 +79,7 @@ let currentDialogState = {
   blockedByUser: false
 };
 let shouldStickToBottom = true;
+let pendingAttachment = null;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -199,16 +208,185 @@ function formatPhoneForDisplay(phone = '') {
 function formatPreview(user) {
   if (user.isBlocked) return 'Пользователь в черном списке';
   if (user.blockedByUser) return 'Пользователь ограничил переписку';
-  if (!user.lastMessage) return 'Нажмите, чтобы начать диалог';
+  if (!user.lastMessage) return user.phone ? formatPhoneForDisplay(user.phone) : 'Нажмите, чтобы начать диалог';
   const prefix = user.lastMessage.senderId === currentUser.id ? 'Вы: ' : '';
-  const messageText = user.lastMessage.deletedAt ? 'Сообщение удалено' : user.lastMessage.text;
-  return `${prefix}${messageText}`;
+  return `${prefix}${describeMessagePreview(user.lastMessage)}`;
+}
+
+
+function describeMessagePreview(message) {
+  if (!message) return 'Нажмите, чтобы начать диалог';
+  if (message.deletedAt) return 'Сообщение удалено';
+  if (message.attachmentType === 'image') return message.text ? `Фото · ${message.text}` : 'Фото';
+  if (message.attachmentType === 'video') return message.text ? `Видео · ${message.text}` : 'Видео';
+  return message.text || 'Новое сообщение';
+}
+
+function createAvatarElement(user, className = 'profile-avatar', alt = 'avatar') {
+  const avatarUrl = getAvatar(user);
+  const initials = getUserInitials(user);
+
+  if (!avatarUrl) {
+    const fallback = document.createElement('div');
+    fallback.className = `${className} default-avatar`;
+    fallback.setAttribute('aria-label', alt);
+    fallback.dataset.avatarUrl = '';
+    fallback.dataset.initials = initials;
+    fallback.textContent = initials;
+    return fallback;
+  }
+
+  const img = document.createElement('img');
+  img.className = className;
+  img.alt = alt;
+  img.loading = 'eager';
+  img.decoding = 'async';
+  img.dataset.avatarUrl = avatarUrl;
+  img.dataset.initials = initials;
+  img.dataset.currentSrc = avatarUrl;
+  img.src = avatarUrl;
+  img.onerror = () => {
+    if (img.dataset.currentSrc === DEFAULT_AVATAR) return;
+    img.onerror = null;
+    img.src = DEFAULT_AVATAR;
+    img.dataset.currentSrc = DEFAULT_AVATAR;
+  };
+  return img;
+}
+
+function syncAvatarElement(target, user, className = 'profile-avatar', alt = 'avatar') {
+  const avatarUrl = getAvatar(user) || '';
+  const initials = getUserInitials(user);
+  const isImg = target.tagName === 'IMG';
+
+  if (!avatarUrl) {
+    if (!target.classList.contains('default-avatar') || target.dataset.initials !== initials) {
+      const fallback = document.createElement('div');
+      fallback.className = `${className} default-avatar`;
+      fallback.setAttribute('aria-label', alt);
+      fallback.dataset.avatarUrl = '';
+      fallback.dataset.initials = initials;
+      fallback.textContent = initials;
+      target.replaceWith(fallback);
+    }
+    return;
+  }
+
+  if (!isImg) {
+    const img = document.createElement('img');
+    img.className = className;
+    img.alt = alt;
+    img.loading = 'eager';
+    img.decoding = 'async';
+    img.dataset.avatarUrl = avatarUrl;
+    img.dataset.initials = initials;
+    img.dataset.currentSrc = avatarUrl;
+    img.src = avatarUrl;
+    img.onerror = () => {
+      if (img.dataset.currentSrc === DEFAULT_AVATAR) return;
+      img.onerror = null;
+      img.src = DEFAULT_AVATAR;
+      img.dataset.currentSrc = DEFAULT_AVATAR;
+    };
+    target.replaceWith(img);
+    return;
+  }
+
+  target.className = className;
+  target.alt = alt;
+  target.dataset.avatarUrl = avatarUrl;
+  target.dataset.initials = initials;
+  if (target.dataset.currentSrc !== avatarUrl) {
+    target.dataset.currentSrc = avatarUrl;
+    target.src = avatarUrl;
+  }
+  target.onerror = () => {
+    if (target.dataset.currentSrc === DEFAULT_AVATAR) return;
+    target.onerror = null;
+    target.src = DEFAULT_AVATAR;
+    target.dataset.currentSrc = DEFAULT_AVATAR;
+  };
+}
+
+function createAttachmentPreviewElement(file) {
+  if (!file || !messageAttachmentPreviewMedia) return;
+  clearAttachmentPreviewElement();
+  const previewUrl = URL.createObjectURL(file);
+  let mediaNode;
+
+  if (file.type.startsWith('video/')) {
+    mediaNode = document.createElement('video');
+    mediaNode.className = 'composer-preview-media';
+    mediaNode.src = previewUrl;
+    mediaNode.muted = true;
+    mediaNode.playsInline = true;
+    mediaNode.preload = 'metadata';
+    mediaNode.controls = false;
+  } else {
+    mediaNode = document.createElement('img');
+    mediaNode.className = 'composer-preview-media';
+    mediaNode.src = previewUrl;
+    mediaNode.alt = file.name || 'preview';
+  }
+
+  mediaNode.dataset.previewUrl = previewUrl;
+  messageAttachmentPreviewMedia.appendChild(mediaNode);
+}
+
+function clearAttachmentPreviewElement() {
+  if (!messageAttachmentPreviewMedia) return;
+  messageAttachmentPreviewMedia.querySelectorAll('[data-preview-url]').forEach((node) => {
+    try { URL.revokeObjectURL(node.dataset.previewUrl); } catch {}
+  });
+  messageAttachmentPreviewMedia.innerHTML = '';
+}
+
+function setPendingAttachment(file) {
+  if (!file) {
+    pendingAttachment = null;
+    if (messageAttachmentInput) messageAttachmentInput.value = '';
+    if (messageAttachmentPreview) messageAttachmentPreview.classList.add('hidden');
+    clearAttachmentPreviewElement();
+    updateAttachmentSubtitle();
+    return;
+  }
+  const isSupported = file.type.startsWith('image/') || file.type.startsWith('video/');
+  if (!isSupported) {
+    alert('Можно отправлять только фото и видео');
+    return;
+  }
+  pendingAttachment = file;
+  if (messageAttachmentName) messageAttachmentName.textContent = file.name;
+  if (messageAttachmentPreview) messageAttachmentPreview.classList.remove('hidden');
+  createAttachmentPreviewElement(file);
+  updateAttachmentSubtitle();
+}
+
+function formatAttachmentSize(file) {
+  if (!file) return '';
+  const mb = file.size / (1024 * 1024);
+  return `${file.type.startsWith('video/') ? 'Видео' : 'Фото'} · ${mb >= 1 ? mb.toFixed(1) + ' МБ' : Math.max(1, Math.round(file.size / 1024)) + ' КБ'}`;
+}
+
+function updateAttachmentSubtitle() {
+  if (composerDropHint && pendingAttachment) composerDropHint.textContent = 'Нажмите «Отправить», чтобы загрузить вложение';
+  else if (composerDropHint) composerDropHint.textContent = 'Нажмите «+» или перетащите фото / видео сюда';
+  const subtitle = document.getElementById('messageAttachmentSubtitle');
+  if (subtitle) subtitle.textContent = pendingAttachment ? formatAttachmentSize(pendingAttachment) : 'Готово к отправке';
 }
 
 function renderCurrentUser() {
   currentUserText.textContent = `${currentUser.name} · ${formatPhoneForDisplay(currentUser.phone)}`;
-  currentUserAvatar.src = getAvatar(currentUser) || DEFAULT_AVATAR;
-  currentUserAvatar.onerror = () => { currentUserAvatar.onerror = null; currentUserAvatar.src = DEFAULT_AVATAR; };
+  const nextAvatar = getAvatar(currentUser) || DEFAULT_AVATAR;
+  if (currentUserAvatar.dataset.currentSrc !== nextAvatar) {
+    currentUserAvatar.src = nextAvatar;
+    currentUserAvatar.dataset.currentSrc = nextAvatar;
+  }
+  currentUserAvatar.onerror = () => {
+    currentUserAvatar.onerror = null;
+    currentUserAvatar.src = DEFAULT_AVATAR;
+    currentUserAvatar.dataset.currentSrc = DEFAULT_AVATAR;
+  };
 }
 
 function loadNotificationPrefs() {
@@ -298,10 +476,73 @@ function handleIncomingNotification(message, isCurrentDialog) {
   showBrowserNotification(message);
 }
 
-function renderUsers() {
-  userList.innerHTML = '';
+function createUserCard(user) {
+  const card = document.createElement('div');
+  card.className = 'user-card';
+  card.dataset.userId = user.id;
 
+  const main = document.createElement('div');
+  main.className = 'user-main';
+
+  const avatarWrap = document.createElement('div');
+  avatarWrap.className = 'avatar-wrap';
+  avatarWrap.appendChild(createAvatarElement(user));
+  const unreadBadge = document.createElement('div');
+  unreadBadge.className = 'unread-badge hidden';
+  avatarWrap.appendChild(unreadBadge);
+
+  const contentWrap = document.createElement('div');
+  contentWrap.className = 'user-main-content';
+
+  const top = document.createElement('div');
+  top.className = 'user-top';
+  const nameLine = document.createElement('div');
+  nameLine.className = 'user-name-line';
+  const name = document.createElement('div');
+  name.className = 'user-name';
+  name.title = getDisplayName(user) || user.name || '';
+  nameLine.appendChild(name);
+  const presence = document.createElement('div');
+  presence.className = 'presence';
+  top.appendChild(nameLine);
+  top.appendChild(presence);
+
+  const preview = document.createElement('div');
+  preview.className = 'user-preview';
+
+  contentWrap.appendChild(top);
+  contentWrap.appendChild(preview);
+  main.appendChild(avatarWrap);
+  main.appendChild(contentWrap);
+  card.appendChild(main);
+  card.addEventListener('click', () => selectDialog(card.dataset.userId));
+  return card;
+}
+
+function updateUserCard(card, user) {
+  card.dataset.userId = user.id;
+  card.classList.toggle('active', currentDialogUser?.id === user.id);
+  const avatarNode = card.querySelector('.profile-avatar, .default-avatar, .avatar-photo-shell');
+  if (avatarNode) syncAvatarElement(avatarNode, user);
+  const unread = card.querySelector('.unread-badge');
+  if (unread) {
+    if (user.unreadCount > 0) {
+      unread.classList.remove('hidden');
+      unread.textContent = user.unreadCount > 99 ? '99+' : user.unreadCount;
+      unread.title = 'Новые непрочитанные сообщения';
+    } else unread.classList.add('hidden');
+  }
+  const name = card.querySelector('.user-name');
+  if (name) { name.textContent = getDisplayName(user) || user.name || 'Без имени'; name.title = name.textContent; }
+  const preview = card.querySelector('.user-preview');
+  if (preview) preview.textContent = formatPreview(user);
+  const presence = card.querySelector('.presence');
+  if (presence) presence.classList.toggle('online', onlineUserIds.has(user.id));
+}
+
+function renderUsers() {
   if (!users.length) {
+    userList.innerHTML = '';
     const empty = document.createElement('div');
     empty.className = 'empty-users';
     empty.textContent = searchInput.value.trim() ? 'Пользователи не найдены.' : 'Диалогов пока нет. Найдите собеседника по номеру телефона.';
@@ -309,35 +550,23 @@ function renderUsers() {
     return;
   }
 
-  users.forEach((user) => {
-    const card = document.createElement('div');
-    card.className = `user-card ${currentDialogUser?.id === user.id ? 'active' : ''}`;
-    card.addEventListener('click', () => selectDialog(user.id));
+  const existingCards = new Map([...userList.querySelectorAll('.user-card')].map((card) => [card.dataset.userId, card]));
+  userList.querySelectorAll('.empty-users').forEach((node) => node.remove());
 
-    const unreadBadge = user.unreadCount > 0
-      ? `<div class="unread-badge" title="Новые непрочитанные сообщения">${user.unreadCount > 99 ? '99+' : user.unreadCount}</div>`
-      : '';
-
-    card.innerHTML = `
-      <div class="user-main">
-        <div class="avatar-wrap">
-          ${getAvatarImgMarkup(user)}
-          ${unreadBadge}
-        </div>
-        <div class="user-main-content">
-          <div class="user-top">
-            <div class="user-name-line">
-              <div class="user-name">${getDisplayName(user)}</div>
-            </div>
-            <div class="presence ${onlineUserIds.has(user.id) ? 'online' : ''}"></div>
-          </div>
-          <div class="user-preview">${formatPreview(user)}</div>
-        </div>
-      </div>
-    `;
-
-    userList.appendChild(card);
+  users.forEach((user, index) => {
+    let card = existingCards.get(user.id);
+    if (!card) {
+      card = createUserCard(user);
+    }
+    updateUserCard(card, user);
+    const expectedNode = userList.children[index];
+    if (expectedNode !== card) {
+      userList.insertBefore(card, expectedNode || null);
+    }
+    existingCards.delete(user.id);
   });
+
+  existingCards.forEach((card) => card.remove());
 }
 
 function showDialogUI(hasDialog) {
@@ -404,7 +633,32 @@ function createMessageNode(message) {
 
   const content = document.createElement('div');
   content.className = 'message-text';
-  content.textContent = message.deletedAt ? 'Сообщение удалено' : message.text;
+  content.textContent = message.deletedAt ? 'Сообщение удалено' : (message.text || '');
+
+  const attachmentUrl = message.attachmentUrl ? resolveAssetUrl(message.attachmentUrl) : '';
+  let mediaNode = null;
+  if (!message.deletedAt && attachmentUrl) {
+    if (message.attachmentType === 'image') {
+      mediaNode = document.createElement('img');
+      mediaNode.className = 'dialog-media';
+      mediaNode.src = attachmentUrl;
+      mediaNode.alt = message.attachmentName || 'Фото';
+      mediaNode.loading = 'lazy';
+    } else if (message.attachmentType === 'video') {
+      mediaNode = document.createElement('video');
+      mediaNode.className = 'dialog-video';
+      mediaNode.src = attachmentUrl;
+      mediaNode.controls = true;
+      mediaNode.preload = 'metadata';
+    } else {
+      mediaNode = document.createElement('a');
+      mediaNode.className = 'message-attachment-link';
+      mediaNode.href = attachmentUrl;
+      mediaNode.target = '_blank';
+      mediaNode.rel = 'noopener noreferrer';
+      mediaNode.textContent = message.attachmentName || 'Открыть вложение';
+    }
+  }
 
   const meta = document.createElement('div');
   meta.className = 'meta';
@@ -412,7 +666,8 @@ function createMessageNode(message) {
   meta.innerHTML = `<span>${getTime(message.createdAt)}</span>${editedMark}${getStatusDots(message)}`;
 
   node.appendChild(sender);
-  node.appendChild(content);
+  if (content.textContent || message.deletedAt) node.appendChild(content);
+  if (mediaNode) node.appendChild(mediaNode);
 
   if (isMe && !message.deletedAt) {
     const actions = document.createElement('div');
@@ -495,6 +750,7 @@ function applyDialogRestrictions() {
   inputArea.classList.toggle('disabled', !currentDialogState.canMessage);
   messageInput.disabled = !currentDialogState.canMessage;
   sendBtn.disabled = !currentDialogState.canMessage;
+  if (messageAttachBtn) messageAttachBtn.disabled = !currentDialogState.canMessage;
   if (!editingMessageId) {
     messageInput.placeholder = currentDialogState.canMessage ? 'Введите сообщение...' : 'Отправка сообщений недоступна';
   }
@@ -737,9 +993,10 @@ function logout() {
 
 async function submitMessage() {
   const text = messageInput.value.trim();
-  if (!text || !currentDialogUser) return;
+  if (!currentDialogUser || !currentDialogState.canMessage) return;
 
   if (editingMessageId) {
+    if (!text) return;
     try {
       const response = await fetch(apiUrl(`/api/messages/${editingMessageId}`), {
         method: 'PUT',
@@ -757,7 +1014,34 @@ async function submitMessage() {
     return;
   }
 
-  if (!socket || !currentDialogState.canMessage) return;
+  if (pendingAttachment) {
+    const formData = new FormData();
+    formData.append('currentUserId', currentUser.id);
+    formData.append('recipientId', currentDialogUser.id);
+    formData.append('text', text);
+    formData.append('file', pendingAttachment);
+
+    try {
+      sendBtn.disabled = true;
+      const response = await fetch(apiUrl('/api/messages/upload'), {
+        method: 'POST',
+        body: formData
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось отправить файл');
+      messageInput.value = '';
+      setPendingAttachment(null);
+      updateAttachmentSubtitle();
+      await loadUsers();
+    } catch (error) {
+      alert(error.message || 'Не удалось отправить файл');
+    } finally {
+      sendBtn.disabled = false;
+    }
+    return;
+  }
+
+  if (!text || !socket) return;
   socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
   messageInput.value = '';
   messageInput.focus();
@@ -975,6 +1259,58 @@ logoutBtn.addEventListener('click', logout);
 backToDialogsBtn.addEventListener('click', exitDialog);
 blockToggleBtn.addEventListener('click', toggleBlockUser);
 renameDialogBtn.addEventListener('click', renameCurrentDialogUser);
+
+if (messageAttachBtn) {
+  messageAttachBtn.addEventListener('click', () => messageAttachmentInput.click());
+}
+
+if (messageAttachmentInput) {
+  messageAttachmentInput.addEventListener('change', () => {
+    const file = messageAttachmentInput.files[0];
+    if (file) setPendingAttachment(file);
+  });
+}
+
+if (clearMessageAttachmentBtn) {
+  clearMessageAttachmentBtn.addEventListener('click', () => setPendingAttachment(null));
+}
+
+function handleDragState(active) {
+  if (!currentDialogState.canMessage) return;
+  inputArea.classList.toggle('drag-over', active);
+  if (chatPanel) chatPanel.classList.toggle('drag-over', active);
+}
+
+['dragenter', 'dragover'].forEach((eventName) => {
+  [inputArea, chatPanel, document.body].filter(Boolean).forEach((dropTarget) => {
+    dropTarget.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      handleDragState(true);
+    });
+  });
+});
+
+['dragleave', 'drop'].forEach((eventName) => {
+  [inputArea, chatPanel, document.body].filter(Boolean).forEach((dropTarget) => {
+    dropTarget.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      if (eventName === 'drop') {
+        const file = event.dataTransfer?.files?.[0];
+        if (file && currentDialogUser && currentDialogState.canMessage) {
+          setPendingAttachment(file);
+          if (!messageInput.value.trim()) {
+            window.setTimeout(() => submitMessage(), 80);
+          }
+        }
+      }
+      handleDragState(false);
+    });
+  });
+});
+
+window.addEventListener('drop', (event) => event.preventDefault());
+window.addEventListener('dragover', (event) => event.preventDefault());
+
 profilePhotoInput.addEventListener('change', () => {
   const file = profilePhotoInput.files[0];
   avatarUploadText.textContent = file ? file.name : 'Выбрать аватарку';

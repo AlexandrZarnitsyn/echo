@@ -81,7 +81,10 @@ function mapMessageRow(row) {
     deliveredAt: row.delivered_at,
     readAt: row.read_at,
     editedAt: row.edited_at,
-    deletedAt: row.deleted_at
+    deletedAt: row.deleted_at,
+    attachmentUrl: row.attachment_url || '',
+    attachmentType: row.attachment_type || '',
+    attachmentName: row.attachment_name || ''
   };
 }
 
@@ -139,6 +142,10 @@ async function initDatabase() {
     );
   `);
 
+  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT NOT NULL DEFAULT '';`);
+  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT NOT NULL DEFAULT '';`);
+  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT NOT NULL DEFAULT '';`);
+
   await query('CREATE INDEX IF NOT EXISTS idx_messages_dialog_id_created_at ON messages(dialog_id, created_at DESC);');
   await query('CREATE INDEX IF NOT EXISTS idx_messages_recipient_unread ON messages(recipient_id, read_at, deleted_at);');
 }
@@ -185,7 +192,8 @@ const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase() || '.png';
-    cb(null, `avatar_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    const prefix = file.mimetype && file.mimetype.startsWith('video/') ? 'video' : (file.mimetype && file.mimetype.startsWith('image/') ? 'image' : 'file');
+    cb(null, `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
   }
 });
 const upload = multer({ storage });
@@ -401,7 +409,9 @@ app.get('/api/users', async (req, res) => {
             m.text,
             m.created_at,
             m.sender_id,
-            m.deleted_at
+            m.deleted_at,
+            m.attachment_type,
+            m.attachment_name
           FROM messages m
           ORDER BY m.dialog_id, m.created_at DESC
         ),
@@ -417,6 +427,8 @@ app.get('/api/users', async (req, res) => {
          lm.created_at AS last_message_created_at,
          lm.sender_id AS last_message_sender_id,
          lm.deleted_at AS last_message_deleted_at,
+         lm.attachment_type AS last_message_attachment_type,
+         lm.attachment_name AS last_message_attachment_name,
          COALESCE(uc.unread_count, 0) AS unread_count,
          (vb.blocked_id IS NOT NULL) AS is_blocked,
          (bm.blocker_id IS NOT NULL) AS blocked_by_user,
@@ -441,7 +453,9 @@ app.get('/api/users', async (req, res) => {
             text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
             createdAt: row.last_message_created_at,
             senderId: String(row.last_message_sender_id),
-            deletedAt: row.last_message_deleted_at || null
+            deletedAt: row.last_message_deleted_at || null,
+            attachmentType: row.last_message_attachment_type || '',
+            attachmentName: row.last_message_attachment_name || ''
           } : null,
           unreadCount: Number(row.unread_count || 0),
           isBlocked: row.is_blocked,
@@ -606,6 +620,81 @@ app.delete('/api/messages/:messageId', async (req, res) => {
   } catch (error) {
     console.error('message delete error', error);
     res.status(500).json({ error: 'Не удалось удалить сообщение' });
+  }
+});
+
+
+app.post('/api/messages/upload', upload.single('file'), async (req, res) => {
+  try {
+    const senderId = String(req.body?.currentUserId || '');
+    const recipientId = String(req.body?.recipientId || '');
+    const text = String(req.body?.text || '').trim();
+    const file = req.file;
+
+    if (!senderId || !recipientId) {
+      return res.status(400).json({ error: 'Не выбран получатель' });
+    }
+    if (!file) {
+      return res.status(400).json({ error: 'Файл не был загружен' });
+    }
+
+    const sender = await getUserById(senderId);
+    const recipient = await getUserById(recipientId);
+    if (!sender || !recipient) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+    if (await areUsersBlocked(sender.id, recipient.id)) {
+      return res.status(403).json({ error: 'Отправка сообщений недоступна' });
+    }
+
+    const isSupported = /^image\//.test(file.mimetype) || /^video\//.test(file.mimetype);
+    if (!isSupported) {
+      return res.status(400).json({ error: 'Можно отправлять только фото и видео' });
+    }
+
+    const dialogId = makeDialogId(sender.id, recipient.id);
+    const recipientOnline = onlineUsers.has(String(recipient.id));
+    const messageId = crypto.randomUUID();
+    const attachmentType = /^image\//.test(file.mimetype) ? 'image' : 'video';
+    const attachmentUrl = `/uploads/${file.filename}`;
+
+    await query(
+      `INSERT INTO messages (
+        id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name
+      ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9)`,
+      [
+        messageId,
+        dialogId,
+        text,
+        String(sender.id),
+        String(recipient.id),
+        recipientOnline ? new Date().toISOString() : null,
+        attachmentUrl,
+        attachmentType,
+        file.originalname || file.filename
+      ]
+    );
+
+    const fullMessage = await query(
+      `SELECT
+          m.*,
+          su.name AS sender_name,
+          su.phone AS sender_phone,
+          ru.name AS recipient_name,
+          ru.phone AS recipient_phone
+       FROM messages m
+       INNER JOIN users su ON su.id = m.sender_id
+       INNER JOIN users ru ON ru.id = m.recipient_id
+       WHERE m.id = $1`,
+      [messageId]
+    );
+
+    const message = mapMessageRow(fullMessage.rows[0]);
+    io.to(`user:${sender.id}`).to(`user:${recipient.id}`).emit('private-message', message);
+    res.json({ message });
+  } catch (error) {
+    console.error('message upload error', error);
+    res.status(500).json({ error: 'Не удалось отправить файл' });
   }
 });
 

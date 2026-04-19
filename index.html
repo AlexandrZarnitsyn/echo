@@ -84,10 +84,21 @@
           <div class="chat hidden" id="chat"></div>
 
           <div class="input-area hidden" id="inputArea">
+            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*" />
+            <div class="composer-attachment hidden" id="messageAttachmentPreview">
+              <div class="composer-attachment-preview-media" id="messageAttachmentPreviewMedia"></div>
+              <div class="composer-attachment-meta">
+                <div class="composer-attachment-name" id="messageAttachmentName"></div>
+                <div class="composer-attachment-subtitle" id="messageAttachmentSubtitle">Готово к отправке</div>
+              </div>
+              <button class="attachment-remove-btn" id="clearMessageAttachmentBtn" type="button" aria-label="Убрать вложение">×</button>
+            </div>
             <div class="composer-row">
+              <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить фото или видео" aria-label="Прикрепить фото или видео">+</button>
               <input id="messageInput" type="text" placeholder="Введите сообщение..." />
               <button id="sendBtn">Отправить</button>
             </div>
+            <div class="composer-drop-hint" id="composerDropHint">Перетащите фото или видео сюда, чтобы отправить</div>
           </div>
         </section>
       </div>

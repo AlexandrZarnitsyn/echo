@@ -196,6 +196,26 @@ body {
   flex-shrink: 0;
 }
 
+
+.avatar-photo-shell {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background-color: #0f172a;
+  will-change: auto;
+  transform: translateZ(0);
+}
+
+.avatar-photo-shell.large {
+  width: 84px;
+  height: 84px;
+}
+
 .default-avatar {
   display: inline-flex;
   align-items: center;
@@ -350,6 +370,33 @@ body {
 }
 
 .presence.online { background: #22c55e; }
+
+
+.user-card {
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.user-card:hover {
+  border-color: rgba(59, 130, 246, 0.38);
+  transform: translateY(-1px);
+}
+
+.chat-panel.drag-over::after {
+  content: 'Отпустите фото или видео для отправки';
+  position: absolute;
+  inset: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed rgba(59, 130, 246, 0.7);
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.18);
+  color: #dbeafe;
+  font-weight: 700;
+  z-index: 20;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
 
 .chat-panel {
   position: relative;
@@ -1207,4 +1254,256 @@ body[data-theme="dark"] .default-avatar {
   color: #dbeafe;
   background: linear-gradient(135deg, #1d4ed8, #2563eb);
   border-color: rgba(59, 130, 246, 0.35);
+}
+
+
+.attach-btn {
+  width: 42px;
+  height: 42px;
+  min-width: 42px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: linear-gradient(135deg, #eff6ff, #dbeafe);
+  color: #2563eb;
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.attach-btn:hover {
+  background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.composer-attachment {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px dashed #93c5fd;
+  background: #eff6ff;
+  border-radius: 14px;
+  margin-bottom: 10px;
+}
+
+.composer-attachment-meta {
+  min-width: 0;
+}
+
+.composer-attachment-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e3a8a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-attachment-subtitle {
+  font-size: 12px;
+  color: #475569;
+  margin-top: 2px;
+}
+
+.attachment-remove-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: #fff;
+  color: #2563eb;
+  font-size: 20px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.attachment-remove-btn:hover {
+  background: #dbeafe;
+}
+
+.composer-drop-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.input-area.drag-over {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.user-name {
+  display: block;
+  max-width: 100%;
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: #f8fbff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-preview {
+  margin-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #b2c3dd;
+}
+
+.user-card .default-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+}
+
+.dialog-media,
+.dialog-video {
+  width: min(320px, 100%);
+  max-width: 100%;
+  border-radius: 14px;
+  display: block;
+  margin-top: 8px;
+  background: rgba(15, 23, 42, 0.16);
+}
+
+.message-attachment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: inherit;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.message-attachment-link:hover {
+  text-decoration: underline;
+}
+
+body[data-theme='light'] .user-name {
+  color: #111827;
+}
+
+body[data-theme='light'] .user-preview {
+  color: #64748b;
+}
+
+body[data-theme='dark'] .attach-btn {
+  background: linear-gradient(135deg, #172033, #1e2b43);
+  color: #dbeafe;
+  border-color: #22304a;
+}
+
+body[data-theme='dark'] .attach-btn:hover {
+  background: linear-gradient(135deg, #1e2b43, #2563eb);
+}
+
+body[data-theme='dark'] .composer-attachment {
+  background: #111827;
+  border-color: #22304a;
+}
+
+body[data-theme='dark'] .composer-attachment-name {
+  color: #dbeafe;
+}
+
+body[data-theme='dark'] .composer-attachment-subtitle,
+body[data-theme='dark'] .composer-drop-hint {
+  color: #94a3b8;
+}
+
+body[data-theme='dark'] .attachment-remove-btn {
+  background: #172033;
+  border-color: #22304a;
+  color: #dbeafe;
+}
+
+body[data-theme='dark'] .attachment-remove-btn:hover {
+  background: #1e2b43;
+}
+
+
+.user-main {
+  width: 100%;
+}
+
+.user-card {
+  min-height: 74px;
+}
+
+.user-top {
+  align-items: flex-start;
+}
+
+.user-name-line {
+  flex: 1;
+}
+
+.user-name {
+  display: block;
+  max-width: 100%;
+  font-size: 17px;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-preview {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.user-card .profile-avatar,
+.user-card .default-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.user-card .profile-avatar {
+  object-fit: cover;
+  background: #dbeafe;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.composer-attachment {
+  align-items: center;
+}
+
+.composer-attachment-preview-media {
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: rgba(15, 23, 42, 0.16);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.composer-preview-media {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
