@@ -124,7 +124,7 @@ const replyComposerText = document.getElementById('replyComposerText');
 const replyComposerClose = document.getElementById('replyComposerClose');
 
 function isCompactMobileLayout() {
-  return window.innerWidth <= 820;
+  return window.innerWidth <= 900 || window.matchMedia('(pointer: coarse)').matches;
 }
 
 function syncResponsiveLayout() {
