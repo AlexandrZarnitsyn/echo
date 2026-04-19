@@ -370,38 +370,40 @@ function pluralizeRu(value, forms) {
   return forms[2];
 }
 
-function formatLastSeen(value) {
-  if (!value) return 'давно';
+function isSameCalendarDay(left, right) {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function formatTelegramLastSeen(value) {
+  if (!value) return 'недавно';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'недавно';
 
-  const diffMs = Date.now() - date.getTime();
-  if (diffMs <= 0) return 'только что';
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  if (diffMs < 0) return `сегодня в ${getTime(date.toISOString())}`;
+  if (diffMs < 5 * 60 * 1000) return 'недавно';
+  if (isSameCalendarDay(now, date)) return `сегодня в ${getTime(date.toISOString())}`;
 
-  const diffMinutes = Math.floor(diffMs / 60000);
-  if (diffMinutes < 1) return 'только что';
-  if (diffMinutes < 60) return `${diffMinutes} ${pluralizeRu(diffMinutes, ['минуту', 'минуты', 'минут'])} назад`;
-
-  const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours} ${pluralizeRu(diffHours, ['час', 'часа', 'часов'])} назад`;
-
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffDays === 1) {
-    return `вчера в ${getTime(date.toISOString())}`;
-  }
-  if (diffDays < 7) {
-    return `${diffDays} ${pluralizeRu(diffDays, ['день', 'дня', 'дней'])} назад`;
-  }
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameCalendarDay(yesterday, date)) return `вчера в ${getTime(date.toISOString())}`;
 
   return formatContactProfileDate(date.toISOString());
+}
+
+function formatLastSeen(value) {
+  return formatTelegramLastSeen(value);
 }
 
 function getPresenceText(user) {
   if (!user) return 'Не в сети';
   const userId = String(user.id || '');
-  if (userId && onlineUserIds.has(userId)) return 'Онлайн';
+  if (userId && onlineUserIds.has(userId)) return 'онлайн';
   const lastSeenAt = user.lastSeenAt || lastSeenMap[userId] || null;
-  return lastSeenAt ? `Был(а) в сети ${formatLastSeen(lastSeenAt)}` : 'Не в сети';
+  return lastSeenAt ? `был(а) в сети ${formatTelegramLastSeen(lastSeenAt)}` : 'был(а) недавно';
 }
 
 function updateDialogProfileTriggerState() {
@@ -487,7 +489,7 @@ async function openContactProfile() {
     if (contactProfileId) contactProfileId.textContent = profileUser.id || '—';
     if (contactProfileDialogType) contactProfileDialogType.textContent = 'Личный диалог';
     if (contactProfileCreatedAt) contactProfileCreatedAt.textContent = formatContactProfileDate(profileUser.createdAt);
-    if (contactProfileLastSeen) contactProfileLastSeen.textContent = onlineUserIds.has(profileUser.id) ? 'Сейчас в сети' : formatLastSeen(profileUser.lastSeenAt || lastSeenMap[String(profileUser.id)] || null);
+    if (contactProfileLastSeen) contactProfileLastSeen.textContent = onlineUserIds.has(profileUser.id) ? 'сейчас в сети' : formatTelegramLastSeen(profileUser.lastSeenAt || lastSeenMap[String(profileUser.id)] || null);
 
     contactProfileModal.classList.remove('hidden');
   } catch (error) {
@@ -1668,6 +1670,40 @@ function applyDialogRestrictions() {
   }
 }
 
+function getDialogsCacheKey() {
+  return currentUser ? `messengerDialogsCache:${currentUser.id}` : '';
+}
+
+function saveDialogsCache() {
+  const cacheKey = getDialogsCacheKey();
+  if (!cacheKey || !Array.isArray(users) || searchInput.value.trim()) return;
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), users }));
+  } catch (_) {}
+}
+
+function restoreDialogsCache() {
+  const cacheKey = getDialogsCacheKey();
+  if (!cacheKey) return false;
+  try {
+    const raw = localStorage.getItem(cacheKey);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    const cachedUsers = Array.isArray(parsed?.users) ? parsed.users : [];
+    if (!cachedUsers.length) return false;
+    users = cachedUsers;
+    renderUsers();
+    updateDialogHeader();
+    if (currentDialogUser) {
+      const foundCurrent = users.find((user) => user.id === currentDialogUser.id);
+      if (foundCurrent) currentDialogUser = foundCurrent;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function loadUsers() {
   const search = searchInput.value.trim();
   const [usersResponse, groupsResponse] = await Promise.all([
@@ -1681,6 +1717,7 @@ async function loadUsers() {
     const bt = b.lastMessage?.createdAt ? new Date(b.lastMessage.createdAt).getTime() : 0;
     return bt - at || getDisplayName(a).localeCompare(getDisplayName(b), 'ru');
   });
+  saveDialogsCache();
 
   if (currentDialogUser) {
     const foundCurrent = users.find((user) => user.id === currentDialogUser.id);
@@ -1733,7 +1770,7 @@ function updateDialogHeader() {
     dialogSubtitle.textContent = count > 0 ? `${count} участников` : 'Групповая беседа';
   } else {
     const phoneText = currentDialogUser.phone ? currentDialogUser.phone : 'Номер скрыт';
-    dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id) ? `${phoneText} · онлайн` : `${phoneText} · был(а) в сети ${formatLastSeen(currentDialogUser.lastSeenAt || lastSeenMap[String(currentDialogUser.id)] || null)}`;
+    dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id) ? `${phoneText} · онлайн` : `${phoneText} · был(а) в сети ${formatTelegramLastSeen(currentDialogUser.lastSeenAt || lastSeenMap[String(currentDialogUser.id)] || null)}`;
   }
   backToDialogsBtn.classList.remove('hidden');
 }
@@ -1824,7 +1861,7 @@ function setupSocket() {
     updateDialogHeader();
     if (!contactProfileModal.classList.contains('hidden') && currentDialogProfile && String(currentDialogProfile.id) === String(userId)) {
       if (contactProfileStatus) contactProfileStatus.textContent = getPresenceText(currentDialogProfile);
-      if (contactProfileLastSeen) contactProfileLastSeen.textContent = isOnline ? 'Сейчас в сети' : formatLastSeen(lastSeenMap[String(userId)] || null);
+      if (contactProfileLastSeen) contactProfileLastSeen.textContent = isOnline ? 'сейчас в сети' : formatTelegramLastSeen(lastSeenMap[String(userId)] || null);
     }
   });
 
@@ -2123,10 +2160,10 @@ async function submitAuth() {
     localStorage.setItem('messengerCurrentUser', JSON.stringify(currentUser));
     renderCurrentUser();
     showScreen(chatScreen);
+    restoreDialogsCache();
     if (socket) socket.disconnect();
     setupSocket();
-    await loadPresence();
-    await loadUsers();
+    await Promise.allSettled([loadUsers(), loadPresence()]);
   } catch {
     authError.textContent = 'Сервер недоступен';
   }
@@ -2671,10 +2708,7 @@ window.addEventListener('resize', () => {
   }
 });
 
-window.addEventListener('load', async () => {
-  loadSavedTheme();
-  loadNotificationPrefs();
-  syncNotificationControls();
+async function bootstrapSavedSession() {
   const savedUser = localStorage.getItem('messengerCurrentUser');
   if (!savedUser) return;
 
@@ -2682,13 +2716,26 @@ window.addEventListener('load', async () => {
     currentUser = JSON.parse(savedUser);
     renderCurrentUser();
     showScreen(chatScreen);
+    restoreDialogsCache();
     setupSocket();
-    await loadPresence();
-    await loadUsers();
+    await Promise.allSettled([loadUsers(), loadPresence()]);
   } catch {
     localStorage.removeItem('messengerCurrentUser');
   }
-});
+}
+
+function initializeApp() {
+  loadSavedTheme();
+  loadNotificationPrefs();
+  syncNotificationControls();
+  bootstrapSavedSession();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeApp, { once: true });
+} else {
+  initializeApp();
+}
 
 loadSavedTheme();
 if (attachmentModalPrevBtn) attachmentModalPrevBtn.addEventListener('click', () => stepAttachmentPreview(-1));
