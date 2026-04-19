@@ -24,6 +24,14 @@ const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const messageAttachBtn = document.getElementById('messageAttachBtn');
 const voiceRecordBtn = document.getElementById('voiceRecordBtn');
+const composerTextRow = document.getElementById('composerTextRow');
+const voiceRecordingPanel = document.getElementById('voiceRecordingPanel');
+const voiceRecordingWave = document.getElementById('voiceRecordingWave');
+const voiceRecordingTime = document.getElementById('voiceRecordingTime');
+const cancelVoiceRecordingBtn = document.getElementById('cancelVoiceRecordingBtn');
+const sendVoiceRecordingBtn = document.getElementById('sendVoiceRecordingBtn');
+const voiceRecordingSwipeHint = document.getElementById('voiceRecordingSwipeHint');
+const voiceRecordingShell = document.querySelector('.voice-recording-shell');
 const messageAttachmentInput = document.getElementById('messageAttachmentInput');
 const messageAttachmentPreview = document.getElementById('messageAttachmentPreview');
 const messageAttachmentName = document.getElementById('messageAttachmentName');
@@ -114,6 +122,15 @@ let mediaRecorder = null;
 let mediaRecorderStream = null;
 let recordedChunks = [];
 let isRecordingVoice = false;
+let recordingStartedAt = 0;
+let recordingTimerId = null;
+let recordingAnimationId = null;
+let pendingVoiceSendOnStop = false;
+let recordingAnalyser = null;
+let recordingAnalyserData = null;
+let recordingAudioContext = null;
+let recordingSourceNode = null;
+let recordingDragState = null;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -791,6 +808,7 @@ function showDialogUI(hasDialog) {
   emptyState.classList.toggle('hidden', hasDialog);
   chat.classList.toggle('hidden', !hasDialog);
   inputArea.classList.toggle('hidden', !hasDialog);
+  if (!hasDialog && isRecordingVoice) finishVoiceRecording({ cancel: true });
   chatScrollControls.classList.toggle('hidden', !hasDialog);
   updateChatScrollControls();
 }
@@ -840,6 +858,164 @@ function getStatusDots(message) {
 }
 
 
+function updateVoiceRecordingComposer() {
+  const recordingActive = isRecordingVoice;
+  composerTextRow?.classList.toggle('hidden', recordingActive);
+  voiceRecordingPanel?.classList.toggle('hidden', !recordingActive);
+  if (voiceRecordBtn) voiceRecordBtn.classList.toggle('is-recording', recordingActive);
+}
+
+function ensureRecordingWaveBars() {
+  if (!voiceRecordingWave || voiceRecordingWave.childElementCount) return;
+  const fragment = document.createDocumentFragment();
+  for (let i = 0; i < 34; i += 1) {
+    const bar = document.createElement('span');
+    bar.className = 'voice-recording-wave-bar';
+    bar.style.height = `${18 + (i % 6) * 4}px`;
+    fragment.appendChild(bar);
+  }
+  voiceRecordingWave.appendChild(fragment);
+}
+
+function startVoiceRecordingVisualization() {
+  ensureRecordingWaveBars();
+  updateVoiceRecordingComposer();
+  recordingStartedAt = Date.now();
+  if (voiceRecordingTime) voiceRecordingTime.textContent = '0:00';
+  if (recordingTimerId) clearInterval(recordingTimerId);
+  recordingTimerId = window.setInterval(() => {
+    if (voiceRecordingTime) voiceRecordingTime.textContent = formatAudioTime((Date.now() - recordingStartedAt) / 1000);
+  }, 250);
+
+  const animate = () => {
+    const bars = voiceRecordingWave?.querySelectorAll('.voice-recording-wave-bar') || [];
+    if (recordingAnalyser && recordingAnalyserData) {
+      recordingAnalyser.getByteFrequencyData(recordingAnalyserData);
+    }
+    bars.forEach((bar, index) => {
+      const sample = recordingAnalyserData ? recordingAnalyserData[index % recordingAnalyserData.length] : Math.random() * 255;
+      const intensity = sample / 255;
+      const height = 8 + Math.round(intensity * 28);
+      bar.style.height = `${height}px`;
+      bar.classList.toggle('is-live', intensity > 0.18);
+      bar.style.opacity = String(0.35 + intensity * 0.85);
+    });
+    if (isRecordingVoice) recordingAnimationId = requestAnimationFrame(animate);
+  };
+
+  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
+  recordingAnimationId = requestAnimationFrame(animate);
+}
+
+function stopVoiceRecordingVisualization() {
+  updateVoiceRecordingComposer();
+  if (recordingTimerId) clearInterval(recordingTimerId);
+  recordingTimerId = null;
+  if (recordingAnimationId) cancelAnimationFrame(recordingAnimationId);
+  recordingAnimationId = null;
+  if (voiceRecordingTime) voiceRecordingTime.textContent = '0:00';
+  voiceRecordingWave?.querySelectorAll('.voice-recording-wave-bar').forEach((bar, index) => {
+    bar.classList.remove('is-live');
+    bar.style.height = `${14 + (index % 5) * 3}px`;
+    bar.style.opacity = '0.75';
+  });
+  voiceRecordingPanel?.style.removeProperty('opacity');
+  voiceRecordingPanel?.style.removeProperty('transform');
+  voiceRecordingPanel?.style.removeProperty('filter');
+  voiceRecordingSwipeHint?.classList.remove('is-canceling');
+  voiceRecordingShell?.classList.remove('is-dragging', 'is-canceling');
+  if (recordingSourceNode) {
+    try { recordingSourceNode.disconnect(); } catch {}
+    recordingSourceNode = null;
+  }
+  if (recordingAnalyser) {
+    try { recordingAnalyser.disconnect(); } catch {}
+    recordingAnalyser = null;
+  }
+  recordingAnalyserData = null;
+  if (recordingAudioContext) {
+    recordingAudioContext.close().catch(() => {});
+    recordingAudioContext = null;
+  }
+}
+
+
+function bindVoiceRecordingSwipe() {
+  if (!voiceRecordingShell) return;
+
+  const threshold = 120;
+
+  const updateDrag = (deltaX) => {
+    const clamped = Math.min(0, deltaX);
+    const progress = Math.min(1, Math.abs(clamped) / threshold);
+    voiceRecordingShell.classList.add('is-dragging');
+    voiceRecordingShell.classList.toggle('is-canceling', progress > 0.72);
+    voiceRecordingSwipeHint?.classList.toggle('is-canceling', progress > 0.72);
+    voiceRecordingShell.style.transform = `translateX(${clamped}px)`;
+    voiceRecordingShell.style.opacity = String(1 - progress * 0.28);
+    voiceRecordingShell.style.filter = `saturate(${1 - progress * 0.2})`;
+  };
+
+  const endDrag = async (cancelledByThreshold = false) => {
+    if (!recordingDragState) return;
+    const shouldCancel = cancelledByThreshold || (recordingDragState.deltaX <= -threshold);
+    recordingDragState = null;
+    voiceRecordingShell.classList.remove('is-dragging');
+    if (shouldCancel) {
+      await finishVoiceRecording({ cancel: true });
+      return;
+    }
+    voiceRecordingShell.classList.remove('is-canceling');
+    voiceRecordingSwipeHint?.classList.remove('is-canceling');
+    voiceRecordingShell.style.transform = 'translateX(0px)';
+    voiceRecordingShell.style.opacity = '1';
+    voiceRecordingShell.style.filter = 'none';
+  };
+
+  voiceRecordingShell.addEventListener('pointerdown', (event) => {
+    if (!isRecordingVoice) return;
+    recordingDragState = { pointerId: event.pointerId, startX: event.clientX, deltaX: 0 };
+    voiceRecordingShell.setPointerCapture?.(event.pointerId);
+  });
+
+  voiceRecordingShell.addEventListener('pointermove', (event) => {
+    if (!recordingDragState || recordingDragState.pointerId !== event.pointerId) return;
+    recordingDragState.deltaX = event.clientX - recordingDragState.startX;
+    updateDrag(recordingDragState.deltaX);
+  });
+
+  const finishPointerDrag = (event) => {
+    if (!recordingDragState || recordingDragState.pointerId !== event.pointerId) return;
+    endDrag(false);
+  };
+
+  voiceRecordingShell.addEventListener('pointerup', finishPointerDrag);
+  voiceRecordingShell.addEventListener('pointercancel', finishPointerDrag);
+}
+
+async function markVoiceMessageListened(messageId) {
+  if (!currentUser?.id || !messageId) return;
+  try {
+    await fetch(apiUrl(`/api/messages/${messageId}/listen`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentUserId: currentUser.id })
+    });
+  } catch (error) {
+    console.error('voice listen status error', error);
+  }
+}
+
+async function finishVoiceRecording({ cancel = false, send = false } = {}) {
+  pendingVoiceSendOnStop = Boolean(send && !cancel);
+  if (!isRecordingVoice) {
+    pendingVoiceSendOnStop = false;
+    return;
+  }
+  if (cancel) recordedChunks = [];
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+}
+
 function formatAudioTime(totalSeconds) {
   const safe = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0;
   const minutes = Math.floor(safe / 60);
@@ -863,6 +1039,9 @@ function buildWaveBars(seedValue, count = 42) {
 function createVoiceMessageNode(message, attachmentUrl, isMe) {
   const wrap = document.createElement('div');
   wrap.className = `voice-message ${isMe ? 'me' : 'other'}`;
+
+  const shouldTrackUnheard = Boolean(message?.attachmentType === 'audio');
+  let listenedMarked = Boolean(message?.audioListened);
 
   const audio = document.createElement('audio');
   audio.className = 'voice-audio-native';
@@ -890,9 +1069,12 @@ function createVoiceMessageNode(message, attachmentUrl, isMe) {
   duration.textContent = '0:00';
 
   const dot = document.createElement('span');
-  dot.className = 'voice-dot';
+  dot.className = `voice-dot ${!listenedMarked && shouldTrackUnheard ? 'is-unheard' : ''}`;
 
-  info.append(duration, dot);
+  const metaGroup = document.createElement('span');
+  metaGroup.className = 'voice-meta-group';
+  metaGroup.append(duration, dot);
+  info.append(metaGroup);
   body.append(wave, info);
   wrap.append(playBtn, body, audio);
 
@@ -922,7 +1104,14 @@ function createVoiceMessageNode(message, attachmentUrl, isMe) {
   audio.addEventListener('loadedmetadata', () => {
     duration.textContent = formatAudioTime(audio.duration || 0);
   });
-  audio.addEventListener('play', syncState);
+  audio.addEventListener('play', async () => {
+    syncState();
+    if (shouldTrackUnheard && !listenedMarked) {
+      listenedMarked = true;
+      dot.classList.remove('is-unheard');
+      markVoiceMessageListened(message.id);
+    }
+  });
   audio.addEventListener('pause', syncState);
   audio.addEventListener('ended', () => {
     audio.currentTime = 0;
@@ -1071,6 +1260,8 @@ function applyDialogRestrictions() {
   if (!currentDialogUser) {
     blockToggleBtn.classList.add('hidden');
     if (voiceRecordBtn) voiceRecordBtn.disabled = false;
+    if (cancelVoiceRecordingBtn) cancelVoiceRecordingBtn.disabled = false;
+    if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = false;
     chatStatusBanner.classList.add('hidden');
     chatStatusBanner.textContent = '';
     inputArea.classList.remove('disabled');
@@ -1096,7 +1287,9 @@ function applyDialogRestrictions() {
   messageInput.disabled = !currentDialogState.canMessage;
   sendBtn.disabled = !currentDialogState.canMessage;
   if (messageAttachBtn) messageAttachBtn.disabled = !currentDialogState.canMessage;
-  if (voiceRecordBtn) voiceRecordBtn.disabled = !currentDialogState.canMessage;
+  if (voiceRecordBtn) voiceRecordBtn.disabled = !currentDialogState.canMessage || isRecordingVoice;
+  if (cancelVoiceRecordingBtn) cancelVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
+  if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
   if (!editingMessageId) {
     messageInput.placeholder = currentDialogState.canMessage ? 'Введите сообщение...' : 'Отправка сообщений недоступна';
   }
@@ -1371,7 +1564,7 @@ async function saveGroup() {
 
 async function toggleVoiceRecording() {
   if (isRecordingVoice) {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    await finishVoiceRecording({ send: false });
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -1381,27 +1574,50 @@ async function toggleVoiceRecording() {
   try {
     mediaRecorderStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recordedChunks = [];
+    pendingVoiceSendOnStop = false;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      recordingAudioContext = new AudioContextClass();
+      recordingSourceNode = recordingAudioContext.createMediaStreamSource(mediaRecorderStream);
+      recordingAnalyser = recordingAudioContext.createAnalyser();
+      recordingAnalyser.fftSize = 128;
+      recordingAnalyser.smoothingTimeConstant = 0.82;
+      recordingSourceNode.connect(recordingAnalyser);
+      recordingAnalyserData = new Uint8Array(recordingAnalyser.frequencyBinCount);
+    }
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
     mediaRecorder = new MediaRecorder(mediaRecorderStream, { mimeType });
     mediaRecorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) recordedChunks.push(event.data);
     };
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-      const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
-      setPendingAttachment(file);
+    mediaRecorder.onstop = async () => {
+      const shouldSend = pendingVoiceSendOnStop;
+      pendingVoiceSendOnStop = false;
       isRecordingVoice = false;
-      if (voiceRecordBtn) {
-        voiceRecordBtn.classList.remove('is-recording');
-        voiceRecordBtn.setAttribute('aria-label', 'Записать голосовое сообщение');
-        voiceRecordBtn.setAttribute('title', 'Записать голосовое сообщение');
-      }
+      stopVoiceRecordingVisualization();
       mediaRecorderStream?.getTracks?.().forEach((track) => track.stop());
       mediaRecorderStream = null;
+
+      const hasAudio = recordedChunks.some((chunk) => chunk.size > 0);
+      if (!hasAudio) {
+        recordedChunks = [];
+        return;
+      }
+
+      const blob = new Blob(recordedChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
+      recordedChunks = [];
+      const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
+      if (shouldSend) {
+        pendingAttachments = [file];
+        pendingAttachmentIndex = 0;
+        requestAnimationFrame(() => sendPendingAttachment());
+      } else {
+        setPendingAttachment(file);
+      }
     };
     mediaRecorder.start();
     isRecordingVoice = true;
-    if (voiceRecordBtn) voiceRecordBtn.textContent = '■';
+    startVoiceRecordingVisualization();
   } catch (error) {
     alert('Не удалось получить доступ к микрофону');
   }
@@ -1483,7 +1699,12 @@ async function submitMessage() {
     return;
   }
 
-  if (pendingAttachment) {
+  if (isRecordingVoice) {
+    await finishVoiceRecording({ send: true });
+    return;
+  }
+
+  if (pendingAttachments.length) {
     await sendPendingAttachment();
     return;
   }
@@ -1715,9 +1936,16 @@ if (messageAttachBtn) {
 if (voiceRecordBtn) {
   voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
 }
+if (cancelVoiceRecordingBtn) {
+  cancelVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ cancel: true }));
+}
+if (sendVoiceRecordingBtn) {
+  sendVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ send: true }));
+}
 if (createGroupBtn) createGroupBtn.addEventListener('click', openGroupModal);
 if (cancelGroupBtn) cancelGroupBtn.addEventListener('click', closeGroupModal);
 if (saveGroupBtn) saveGroupBtn.addEventListener('click', saveGroup);
+bindVoiceRecordingSwipe();
 if (groupModal) groupModal.addEventListener('click', (event) => { if (event.target === groupModal) closeGroupModal(); });
 
 if (messageAttachmentInput) {
