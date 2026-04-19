@@ -2433,7 +2433,7 @@ body[data-theme='light'] .avatar-suggestion-status {
 }
 
 .contact-profile-card {
-  max-width: 520px;
+  max-width: 560px;
 }
 
 .contact-profile-preview {
@@ -2456,11 +2456,12 @@ body[data-theme='light'] .avatar-suggestion-status {
   font-size: 22px;
   font-weight: 700;
   text-align: center;
+  color: var(--text);
 }
 
 .contact-profile-status {
   text-align: center;
-  opacity: 0.8;
+  color: var(--muted);
   margin-top: 4px;
   margin-bottom: 18px;
 }
@@ -2468,13 +2469,15 @@ body[data-theme='light'] .avatar-suggestion-status {
 .contact-profile-actions {
   display: flex;
   justify-content: center;
-  margin-top: 10px;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 18px;
+  flex-wrap: wrap;
 }
 
 .contact-profile-preview .contact-profile-avatar {
   cursor: zoom-in;
 }
-
 
 .contact-profile-grid {
   display: grid;
@@ -2488,7 +2491,19 @@ body[data-theme='light'] .avatar-suggestion-status {
 
 .contact-profile-label {
   font-size: 13px;
-  opacity: 0.72;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.contact-profile-card .readonly-field {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  color: var(--text);
+  background: rgba(148,163,184,.10);
+  border: 1px solid rgba(148,163,184,.18);
+  border-radius: 14px;
 }
 
 body[data-theme="light"] .clickable-profile-trigger:hover {
@@ -2499,6 +2514,26 @@ body[data-theme="light"] .contact-profile-avatar {
   border-color: rgba(17,24,39,0.1);
 }
 
+body[data-theme="light"] .contact-profile-card .readonly-field {
+  color: #0f172a;
+  background: rgba(241,245,249,.95);
+  border-color: rgba(148,163,184,.24);
+}
+
+body[data-theme="dark"] .contact-profile-card .readonly-field {
+  color: #f8fafc;
+  background: rgba(15,23,42,.78);
+  border-color: rgba(100,116,139,.35);
+}
+
+body[data-theme="light"] .contact-profile-name {
+  color: #0f172a;
+}
+
+body[data-theme="light"] .contact-profile-status,
+body[data-theme="light"] .contact-profile-label {
+  color: #475569;
+}
 
 .clickable-profile-trigger.is-loading {
   opacity: 0.7;

@@ -997,7 +997,18 @@ app.post('/api/messages/:messageId/listen', async (req, res) => {
       [messageId, currentUserId]
     );
 
-    res.json({ ok: true, listened: true });
+    const payload = await getFullMessageById(messageId);
+    if (payload) {
+      const eventPayload = { messageId, userId: currentUserId, message: payload };
+      if (payload.isGroup && payload.groupId) {
+        const memberIds = await getGroupMemberIds(payload.groupId);
+        memberIds.forEach((userId) => io.to(`user:${userId}`).emit('message:audio-listened', eventPayload));
+      } else {
+        io.to(`user:${payload.senderId}`).to(`user:${payload.recipientId}`).emit('message:audio-listened', eventPayload);
+      }
+    }
+
+    res.json({ ok: true, listened: true, message: payload || null });
   } catch (error) {
     console.error('message listen error', error);
     res.status(500).json({ error: 'Не удалось обновить статус прослушивания' });

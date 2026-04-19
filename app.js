@@ -83,8 +83,8 @@ const silentModeToggle = document.getElementById('silentModeToggle');
 const profilePhotoInput = document.getElementById('profilePhotoInput');
 const profilePreviewAvatar = document.getElementById('profilePreviewAvatar');
 const avatarUploadText = document.getElementById('avatarUploadText');
-const blockToggleBtn = document.getElementById('blockToggleBtn');
-const renameDialogBtn = document.getElementById('renameDialogBtn');
+const contactBlockToggleBtn = document.getElementById('contactBlockToggleBtn');
+const contactRenameDialogBtn = document.getElementById('contactRenameDialogBtn');
 const chatStatusBanner = document.getElementById('chatStatusBanner');
 const settingsTabs = document.querySelectorAll('.settings-tab');
 const settingsPanels = document.querySelectorAll('.settings-panel');
@@ -103,7 +103,7 @@ const groupNameWrap = document.getElementById('groupNameWrap');
 const cancelGroupBtn = document.getElementById('cancelGroupBtn');
 const saveGroupBtn = document.getElementById('saveGroupBtn');
 const addGroupMembersBtn = document.getElementById('addGroupMembersBtn');
-const suggestAvatarBtn = document.getElementById('suggestAvatarBtn');
+const contactSuggestAvatarBtn = document.getElementById('contactSuggestAvatarBtn');
 const avatarSuggestionInput = document.getElementById('avatarSuggestionInput');
 
 const APP_CONFIG = window.APP_CONFIG || {};
@@ -394,6 +394,10 @@ async function openContactProfile() {
       contactProfileStatus.textContent = count ? `Участников: ${count}` : 'Групповая беседа';
     }
     contactProfileActions?.classList.remove('hidden');
+    changeGroupPhotoBtn?.classList.remove('hidden');
+    contactSuggestAvatarBtn?.classList.add('hidden');
+    contactRenameDialogBtn?.classList.add('hidden');
+    contactBlockToggleBtn?.classList.add('hidden');
     if (contactProfileNameField) contactProfileNameField.textContent = currentDialogUser.name || '—';
     if (contactProfilePhone) contactProfilePhone.textContent = '—';
     if (contactProfileId) contactProfileId.textContent = currentDialogUser.rawId || String(currentDialogUser.id || '').replace(/^group:/, '') || '—';
@@ -429,7 +433,12 @@ async function openContactProfile() {
     }
     if (contactProfileName) contactProfileName.textContent = getDisplayName(profileUser) || profileUser.name || 'Пользователь';
     if (contactProfileStatus) contactProfileStatus.textContent = getPresenceText(profileUser);
-    contactProfileActions?.classList.add('hidden');
+    contactProfileActions?.classList.remove('hidden');
+    changeGroupPhotoBtn?.classList.add('hidden');
+    contactSuggestAvatarBtn?.classList.remove('hidden');
+    contactRenameDialogBtn?.classList.remove('hidden');
+    contactBlockToggleBtn?.classList.remove('hidden');
+    contactBlockToggleBtn.textContent = currentDialogState.isBlocked ? 'Убрать из чёрного списка' : 'В чёрный список';
     if (contactProfileNameField) contactProfileNameField.textContent = profileUser.name || '—';
     if (contactProfilePhone) contactProfilePhone.textContent = profileUser.phone || 'Номер скрыт';
     if (contactProfileId) contactProfileId.textContent = profileUser.id || '—';
@@ -448,6 +457,10 @@ async function openContactProfile() {
 function closeContactProfile() {
   if (!contactProfileModal) return;
   contactProfileModal.classList.add('hidden');
+  changeGroupPhotoBtn?.classList.add('hidden');
+  contactSuggestAvatarBtn?.classList.add('hidden');
+  contactRenameDialogBtn?.classList.add('hidden');
+  contactBlockToggleBtn?.classList.add('hidden');
 }
 
 function formatPreview(user) {
@@ -1214,11 +1227,13 @@ function bindVoiceRecordingSwipe() {
 async function markVoiceMessageListened(messageId) {
   if (!currentUser?.id || !messageId) return;
   try {
-    await fetch(apiUrl(`/api/messages/${messageId}/listen`), {
+    const response = await fetch(apiUrl(`/api/messages/${messageId}/listen`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ currentUserId: currentUser.id })
     });
+    const data = await parseApiResponse(response);
+    if (data?.message) upsertMessage(data.message);
   } catch (error) {
     console.error('voice listen status error', error);
   }
@@ -1571,7 +1586,7 @@ function syncCurrentUserFromList(sourceUser) {
 
 function applyDialogRestrictions() {
   if (!currentDialogUser) {
-    blockToggleBtn.classList.add('hidden');
+    if (contactBlockToggleBtn) contactBlockToggleBtn.classList.add('hidden');
     if (voiceRecordBtn) voiceRecordBtn.disabled = false;
     if (cancelVoiceRecordingBtn) cancelVoiceRecordingBtn.disabled = false;
     if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = false;
@@ -1583,8 +1598,10 @@ function applyDialogRestrictions() {
     return;
   }
 
-  blockToggleBtn.classList.remove('hidden');
-  blockToggleBtn.textContent = currentDialogState.isBlocked ? 'Убрать из черного списка' : 'В черный список';
+  if (contactBlockToggleBtn) {
+    contactBlockToggleBtn.classList.toggle('hidden', currentDialogUser.type === 'group');
+    contactBlockToggleBtn.textContent = currentDialogState.isBlocked ? 'Убрать из чёрного списка' : 'В чёрный список';
+  }
 
   let bannerText = '';
   if (currentDialogState.isBlocked) {
@@ -1662,16 +1679,12 @@ function updateDialogHeader() {
     dialogSubtitle.textContent = 'Личные сообщения в реальном времени';
     updateDialogProfileTriggerState();
     backToDialogsBtn.classList.add('hidden');
-    renameDialogBtn.classList.add('hidden');
-    suggestAvatarBtn?.classList.add('hidden');
     return;
   }
 
   dialogTitle.textContent = getDisplayName(currentDialogUser);
   updateDialogProfileTriggerState();
-  renameDialogBtn.classList.toggle('hidden', currentDialogUser.type === 'group');
   addGroupMembersBtn?.classList.toggle('hidden', currentDialogUser.type !== 'group');
-  suggestAvatarBtn?.classList.toggle('hidden', currentDialogUser.type === 'group');
   if (currentDialogUser.type === 'group') {
     const count = Array.isArray(currentDialogUser.memberIds) ? currentDialogUser.memberIds.length : 0;
     dialogSubtitle.textContent = count > 0 ? `${count} участников` : 'Групповая беседа';
@@ -1794,6 +1807,19 @@ function setupSocket() {
     upsertMessage(message);
     await loadUsers();
     if (editingMessageId === message.id && message.deletedAt) resetEditingState();
+  });
+
+  socket.on('message:audio-listened', ({ messageId, userId, message }) => {
+    if (message) {
+      upsertMessage(message);
+      return;
+    }
+    if (!messageId) return;
+    const index = currentDialogMessages.findIndex((item) => item.id === messageId);
+    if (index >= 0) {
+      currentDialogMessages[index] = { ...currentDialogMessages[index], audioListened: true };
+      upsertMessage(currentDialogMessages[index]);
+    }
   });
 
   socket.on('message:deleted', async (message) => {
@@ -2307,6 +2333,9 @@ async function toggleBlockUser() {
   currentUser = { ...currentUser, ...data.user };
   localStorage.setItem('messengerCurrentUser', JSON.stringify(currentUser));
   renderCurrentUser();
+  if (contactBlockToggleBtn && !contactProfileModal?.classList.contains('hidden') && currentDialogUser?.type !== 'group') {
+    contactBlockToggleBtn.textContent = currentDialogState.isBlocked ? 'Убрать из чёрного списка' : 'В чёрный список';
+  }
   await loadUsers();
   await loadBlacklist();
 }
@@ -2323,6 +2352,9 @@ async function removeFromBlacklist(userId) {
   currentUser = { ...currentUser, ...data.user };
   localStorage.setItem('messengerCurrentUser', JSON.stringify(currentUser));
   renderCurrentUser();
+  if (contactBlockToggleBtn && !contactProfileModal?.classList.contains('hidden') && currentDialogUser?.type !== 'group') {
+    contactBlockToggleBtn.textContent = currentDialogState.isBlocked ? 'Убрать из чёрного списка' : 'В чёрный список';
+  }
   await loadUsers();
   await loadBlacklist();
 }
@@ -2347,14 +2379,14 @@ if (closeContactProfileBtn) closeContactProfileBtn.addEventListener('click', clo
 saveProfileBtn.addEventListener('click', saveProfile);
 logoutBtn.addEventListener('click', logout);
 backToDialogsBtn.addEventListener('click', exitDialog);
-blockToggleBtn.addEventListener('click', toggleBlockUser);
-renameDialogBtn.addEventListener('click', renameCurrentDialogUser);
+if (contactBlockToggleBtn) contactBlockToggleBtn.addEventListener('click', toggleBlockUser);
+if (contactRenameDialogBtn) contactRenameDialogBtn.addEventListener('click', renameCurrentDialogUser);
 
 if (messageAttachBtn) {
   messageAttachBtn.addEventListener('click', () => messageAttachmentInput.click());
 }
-if (suggestAvatarBtn) {
-  suggestAvatarBtn.addEventListener('click', () => avatarSuggestionInput?.click());
+if (contactSuggestAvatarBtn) {
+  contactSuggestAvatarBtn.addEventListener('click', () => avatarSuggestionInput?.click());
 }
 if (avatarSuggestionInput) {
   avatarSuggestionInput.addEventListener('change', () => {
