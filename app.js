@@ -123,6 +123,14 @@ const replyComposerTitle = document.getElementById('replyComposerTitle');
 const replyComposerText = document.getElementById('replyComposerText');
 const replyComposerClose = document.getElementById('replyComposerClose');
 
+function isCompactMobileLayout() {
+  return window.innerWidth <= 820;
+}
+
+function syncResponsiveLayout() {
+  document.body.classList.toggle('mobile-chat-open', Boolean(currentDialogUser) && isCompactMobileLayout());
+}
+
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
 const SOCKET_URL = String(APP_CONFIG.SOCKET_URL || API_BASE_URL || '').replace(/\/$/, '');
@@ -1205,6 +1213,7 @@ function renderUsers() {
 }
 
 function showDialogUI(hasDialog) {
+  syncResponsiveLayout();
   emptyState.classList.toggle('hidden', hasDialog);
   chat.classList.toggle('hidden', !hasDialog);
   inputArea.classList.toggle('hidden', !hasDialog);
@@ -2018,6 +2027,7 @@ async function loadPresence() {
 
 function updateDialogHeader() {
   if (!currentDialogUser) {
+    syncResponsiveLayout();
     dialogTitle.textContent = 'Выберите собеседника';
     dialogSubtitle.textContent = 'Личные сообщения в реальном времени';
     updateDialogProfileTriggerState();
@@ -2025,6 +2035,7 @@ function updateDialogHeader() {
     return;
   }
 
+  syncResponsiveLayout();
   dialogTitle.textContent = getDisplayName(currentDialogUser);
   updateDialogProfileTriggerState();
   addGroupMembersBtn?.classList.toggle('hidden', currentDialogUser.type !== 'group');
@@ -2783,6 +2794,8 @@ passwordInput.addEventListener('keydown', (event) => {
 searchInput.addEventListener('input', loadUsers);
 sendBtn.addEventListener('click', submitMessage);
 replyComposerClose?.addEventListener('click', clearReplyTarget);
+window.addEventListener('resize', syncResponsiveLayout);
+syncResponsiveLayout();
 messageInput.addEventListener('input', () => {
   queueLocalTypingSignal();
 });
