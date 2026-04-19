@@ -80,6 +80,7 @@ let currentDialogState = {
 };
 let shouldStickToBottom = true;
 let pendingAttachment = null;
+let isUploadingAttachment = false;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -309,45 +310,60 @@ function syncAvatarElement(target, user, className = 'profile-avatar', alt = 'av
 }
 
 function createAttachmentPreviewElement(file) {
-  if (!file || !messageAttachmentPreviewMedia) return;
+  if (!file || !attachmentModalPreview) return;
   clearAttachmentPreviewElement();
   const previewUrl = URL.createObjectURL(file);
   let mediaNode;
 
   if (file.type.startsWith('video/')) {
     mediaNode = document.createElement('video');
-    mediaNode.className = 'composer-preview-media';
+    mediaNode.className = 'attachment-preview-media';
     mediaNode.src = previewUrl;
     mediaNode.muted = true;
     mediaNode.playsInline = true;
     mediaNode.preload = 'metadata';
-    mediaNode.controls = false;
+    mediaNode.controls = true;
   } else {
     mediaNode = document.createElement('img');
-    mediaNode.className = 'composer-preview-media';
+    mediaNode.className = 'attachment-preview-media';
     mediaNode.src = previewUrl;
     mediaNode.alt = file.name || 'preview';
   }
 
   mediaNode.dataset.previewUrl = previewUrl;
-  messageAttachmentPreviewMedia.appendChild(mediaNode);
+  attachmentModalPreview.appendChild(mediaNode);
 }
 
 function clearAttachmentPreviewElement() {
-  if (!messageAttachmentPreviewMedia) return;
-  messageAttachmentPreviewMedia.querySelectorAll('[data-preview-url]').forEach((node) => {
+  if (!attachmentModalPreview) return;
+  attachmentModalPreview.querySelectorAll('[data-preview-url]').forEach((node) => {
     try { URL.revokeObjectURL(node.dataset.previewUrl); } catch {}
   });
-  messageAttachmentPreviewMedia.innerHTML = '';
+  attachmentModalPreview.innerHTML = '';
+}
+
+function closeAttachmentModal() {
+  if (attachmentModal) attachmentModal.classList.add('hidden');
+  if (attachmentCaptionInput) attachmentCaptionInput.value = '';
+  clearAttachmentPreviewElement();
+  pendingAttachment = null;
+  if (messageAttachmentInput) messageAttachmentInput.value = '';
+  isUploadingAttachment = false;
+  if (attachmentSendBtn) attachmentSendBtn.disabled = false;
+}
+
+function openAttachmentModal(file) {
+  if (!file) return;
+  pendingAttachment = file;
+  if (attachmentModalTitle) attachmentModalTitle.textContent = file.type.startsWith('video/') ? 'Отправить видео' : 'Отправить изображение';
+  if (attachmentCaptionInput) attachmentCaptionInput.value = messageInput.value.trim();
+  createAttachmentPreviewElement(file);
+  if (attachmentModal) attachmentModal.classList.remove('hidden');
 }
 
 function setPendingAttachment(file) {
   if (!file) {
-    pendingAttachment = null;
-    if (messageAttachmentInput) messageAttachmentInput.value = '';
-    if (messageAttachmentPreview) messageAttachmentPreview.classList.add('hidden');
-    clearAttachmentPreviewElement();
-    updateAttachmentSubtitle();
+    closeAttachmentModal();
     return;
   }
   const isSupported = file.type.startsWith('image/') || file.type.startsWith('video/');
@@ -355,11 +371,7 @@ function setPendingAttachment(file) {
     alert('Можно отправлять только фото и видео');
     return;
   }
-  pendingAttachment = file;
-  if (messageAttachmentName) messageAttachmentName.textContent = file.name;
-  if (messageAttachmentPreview) messageAttachmentPreview.classList.remove('hidden');
-  createAttachmentPreviewElement(file);
-  updateAttachmentSubtitle();
+  openAttachmentModal(file);
 }
 
 function formatAttachmentSize(file) {
@@ -368,11 +380,34 @@ function formatAttachmentSize(file) {
   return `${file.type.startsWith('video/') ? 'Видео' : 'Фото'} · ${mb >= 1 ? mb.toFixed(1) + ' МБ' : Math.max(1, Math.round(file.size / 1024)) + ' КБ'}`;
 }
 
-function updateAttachmentSubtitle() {
-  if (composerDropHint && pendingAttachment) composerDropHint.textContent = 'Нажмите «Отправить», чтобы загрузить вложение';
-  else if (composerDropHint) composerDropHint.textContent = 'Нажмите «+» или перетащите фото / видео сюда';
-  const subtitle = document.getElementById('messageAttachmentSubtitle');
-  if (subtitle) subtitle.textContent = pendingAttachment ? formatAttachmentSize(pendingAttachment) : 'Готово к отправке';
+function updateAttachmentSubtitle() {}
+
+async function sendPendingAttachment() {
+  if (!pendingAttachment || !currentDialogUser || !currentDialogState.canMessage || isUploadingAttachment) return;
+  isUploadingAttachment = true;
+  if (attachmentSendBtn) attachmentSendBtn.disabled = true;
+  const caption = (attachmentCaptionInput?.value || '').trim();
+  const formData = new FormData();
+  formData.append('currentUserId', currentUser.id);
+  formData.append('recipientId', currentDialogUser.id);
+  formData.append('text', caption);
+  formData.append('file', pendingAttachment);
+
+  try {
+    const response = await fetch(apiUrl('/api/messages/upload'), {
+      method: 'POST',
+      body: formData
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось отправить файл');
+    messageInput.value = '';
+    closeAttachmentModal();
+    await loadUsers();
+  } catch (error) {
+    alert(error.message || 'Не удалось отправить файл');
+    isUploadingAttachment = false;
+    if (attachmentSendBtn) attachmentSendBtn.disabled = false;
+  }
 }
 
 function renderCurrentUser() {
@@ -1015,29 +1050,7 @@ async function submitMessage() {
   }
 
   if (pendingAttachment) {
-    const formData = new FormData();
-    formData.append('currentUserId', currentUser.id);
-    formData.append('recipientId', currentDialogUser.id);
-    formData.append('text', text);
-    formData.append('file', pendingAttachment);
-
-    try {
-      sendBtn.disabled = true;
-      const response = await fetch(apiUrl('/api/messages/upload'), {
-        method: 'POST',
-        body: formData
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Не удалось отправить файл');
-      messageInput.value = '';
-      setPendingAttachment(null);
-      updateAttachmentSubtitle();
-      await loadUsers();
-    } catch (error) {
-      alert(error.message || 'Не удалось отправить файл');
-    } finally {
-      sendBtn.disabled = false;
-    }
+    await sendPendingAttachment();
     return;
   }
 
@@ -1271,9 +1284,10 @@ if (messageAttachmentInput) {
   });
 }
 
-if (clearMessageAttachmentBtn) {
-  clearMessageAttachmentBtn.addEventListener('click', () => setPendingAttachment(null));
-}
+if (attachmentModalCloseBtn) attachmentModalCloseBtn.addEventListener('click', closeAttachmentModal);
+if (attachmentCancelBtn) attachmentCancelBtn.addEventListener('click', closeAttachmentModal);
+if (attachmentChooseAnotherBtn) attachmentChooseAnotherBtn.addEventListener('click', () => messageAttachmentInput && messageAttachmentInput.click());
+if (attachmentSendBtn) attachmentSendBtn.addEventListener('click', sendPendingAttachment);
 
 function handleDragState(active) {
   if (!currentDialogState.canMessage) return;
@@ -1282,25 +1296,24 @@ function handleDragState(active) {
 }
 
 ['dragenter', 'dragover'].forEach((eventName) => {
-  [inputArea, chatPanel, document.body].filter(Boolean).forEach((dropTarget) => {
+  [inputArea, chatPanel].filter(Boolean).forEach((dropTarget) => {
     dropTarget.addEventListener(eventName, (event) => {
       event.preventDefault();
+      event.stopPropagation();
       handleDragState(true);
     });
   });
 });
 
 ['dragleave', 'drop'].forEach((eventName) => {
-  [inputArea, chatPanel, document.body].filter(Boolean).forEach((dropTarget) => {
+  [inputArea, chatPanel].filter(Boolean).forEach((dropTarget) => {
     dropTarget.addEventListener(eventName, (event) => {
       event.preventDefault();
+      event.stopPropagation();
       if (eventName === 'drop') {
         const file = event.dataTransfer?.files?.[0];
         if (file && currentDialogUser && currentDialogState.canMessage) {
           setPendingAttachment(file);
-          if (!messageInput.value.trim()) {
-            window.setTimeout(() => submitMessage(), 80);
-          }
         }
       }
       handleDragState(false);
