@@ -50,13 +50,11 @@
                 <div class="header-subtitle" id="currentUserText"></div>
               </div>
             </div>
+            <button class="ghost-btn" id="createGroupBtn" type="button">Новая беседа</button>
           </div>
 
           <div class="search-box">
-            <input id="searchInput" type="text" placeholder="Поиск по номеру телефона" />
-          </div>
-          <div class="sidebar-actions">
-            <button class="primary-btn sidebar-create-btn" id="createGroupBtn" type="button">Новая беседа</button>
+            <input id="searchInput" type="text" placeholder="Поиск по номеру или названию беседы" />
           </div>
 
           <div class="user-list" id="userList"></div>
@@ -87,7 +85,7 @@
           <div class="chat hidden" id="chat"></div>
 
           <div class="input-area hidden" id="inputArea">
-            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*" />
+            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*" multiple />
             <div class="composer-row">
               <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить фото или видео" aria-label="Прикрепить фото или видео">+</button>
               <input id="messageInput" type="text" placeholder="Введите сообщение..." />
@@ -197,7 +195,7 @@
         <input id="attachmentCaptionInput" type="text" placeholder="Добавьте подпись" />
       </div>
       <div class="attachment-modal-footer">
-        <button class="ghost-btn" id="attachmentChooseAnotherBtn" type="button">Добавить</button>
+        <button class="ghost-btn" id="attachmentChooseAnotherBtn" type="button">Добавить ещё</button>
         <button class="ghost-btn" id="attachmentCancelBtn" type="button">Отмена</button>
         <button class="primary-btn" id="attachmentSendBtn" type="button">Отправить</button>
       </div>
@@ -210,17 +208,16 @@
       <button class="media-viewer-nav prev hidden" id="mediaViewerPrevBtn" type="button" aria-label="Предыдущее">‹</button>
       <button class="media-viewer-nav next hidden" id="mediaViewerNextBtn" type="button" aria-label="Следующее">›</button>
       <button class="media-viewer-close" id="mediaViewerCloseBtn" type="button" aria-label="Закрыть">×</button>
-      <div class="media-viewer-counter hidden" id="mediaViewerCounter"></div>
       <div class="media-viewer-content" id="mediaViewerContent"></div>
     </div>
   </div>
-
+  
   <div class="modal-backdrop hidden" id="groupModal">
     <div class="modal-card group-modal-card">
-      <div class="modal-title">Создать беседу</div>
+      <div class="modal-title">Новая беседа</div>
       <div class="form-group">
-        <label for="groupNameInput">Название беседы</label>
-        <input id="groupNameInput" type="text" placeholder="Например, Семья или Работа" />
+        <label for="groupTitleInput">Название беседы</label>
+        <input id="groupTitleInput" type="text" placeholder="Например, Рабочий чат" />
       </div>
       <div class="form-group">
         <label>Участники</label>
@@ -228,8 +225,8 @@
       </div>
       <div class="modal-footer">
         <div class="modal-actions">
-          <button class="ghost-btn" id="cancelGroupBtn" type="button">Отмена</button>
-          <button class="primary-btn" id="saveGroupBtn" type="button">Создать</button>
+          <button class="ghost-btn" id="closeGroupBtn" type="button">Отмена</button>
+          <button class="primary-btn" id="saveGroupBtn" type="button">Создать беседу</button>
         </div>
       </div>
     </div>
