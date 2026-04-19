@@ -87,7 +87,7 @@
           <div class="chat hidden" id="chat"></div>
 
           <div class="input-area hidden" id="inputArea">
-            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*,audio/*" />
+            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*,audio/*" multiple />
             <div class="composer-row">
               <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить файл" aria-label="Прикрепить файл">+</button>
               <button class="attach-btn" id="voiceRecordBtn" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение"></button>
@@ -191,8 +191,12 @@
         <button class="attachment-modal-close" id="attachmentModalCloseBtn" type="button" aria-label="Закрыть">×</button>
       </div>
       <div class="attachment-modal-preview-wrap" id="attachmentModalPreviewWrap">
+        <button class="attachment-modal-nav prev hidden" id="attachmentModalPrevBtn" type="button" aria-label="Предыдущий файл">‹</button>
         <div class="attachment-modal-preview" id="attachmentModalPreview"></div>
+        <button class="attachment-modal-nav next hidden" id="attachmentModalNextBtn" type="button" aria-label="Следующий файл">›</button>
+        <div class="attachment-modal-counter hidden" id="attachmentModalCounter"></div>
       </div>
+      <div class="attachment-modal-thumbs hidden" id="attachmentModalThumbs"></div>
       <div class="form-group attachment-caption-group">
         <label for="attachmentCaptionInput">Подпись</label>
         <input id="attachmentCaptionInput" type="text" placeholder="Добавьте подпись" />

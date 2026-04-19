@@ -1623,6 +1623,91 @@ body[data-theme='light'] .attachment-modal-title { color:#0f172a; }
 body[data-theme='light'] .attachment-modal-close { background:#e2e8f0; color:#0f172a; }
 body[data-theme='light'] .attachment-modal-preview-wrap { background:#f1f5f9; }
 body[data-theme='light'] .attachment-modal-footer { background: linear-gradient(to top, #ffffff 70%, rgba(255,255,255,0)); }
+
+.attachment-modal-preview-wrap {
+  position: relative;
+}
+
+.attachment-modal-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(2, 6, 23, 0.72);
+  color: #fff;
+  font-size: 28px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+  backdrop-filter: blur(10px);
+}
+
+.attachment-modal-nav.prev { left: 14px; }
+.attachment-modal-nav.next { right: 14px; }
+
+.attachment-modal-counter {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.7);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  z-index: 2;
+}
+
+.attachment-modal-thumbs {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 12px 4px 2px;
+}
+
+.attachment-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 2px solid transparent;
+  opacity: 0.72;
+  cursor: pointer;
+  flex: 0 0 auto;
+  background: #0f172a;
+}
+
+.attachment-thumb.active {
+  border-color: #2563eb;
+  opacity: 1;
+  box-shadow: 0 12px 24px rgba(37,99,235,0.24);
+}
+
+.message-media-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+body[data-theme='light'] .attachment-modal-nav {
+  background: rgba(255,255,255,0.92);
+  color: #0f172a;
+  border-color: rgba(15,23,42,0.08);
+}
+
+body[data-theme='light'] .attachment-modal-counter {
+  background: rgba(255,255,255,0.92);
+  color: #0f172a;
+}
+
 body[data-theme='light'] .user-name { color:#0f172a !important; }
 body[data-theme='light'] .user-preview { color:#475569 !important; }
 

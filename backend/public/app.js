@@ -32,6 +32,10 @@ const messageAttachmentPreviewMedia = document.getElementById('messageAttachment
 const attachmentModal = document.getElementById('attachmentModal');
 const attachmentModalTitle = document.getElementById('attachmentModalTitle');
 const attachmentModalPreview = document.getElementById('attachmentModalPreview');
+const attachmentModalPrevBtn = document.getElementById('attachmentModalPrevBtn');
+const attachmentModalNextBtn = document.getElementById('attachmentModalNextBtn');
+const attachmentModalCounter = document.getElementById('attachmentModalCounter');
+const attachmentModalThumbs = document.getElementById('attachmentModalThumbs');
 const attachmentModalCloseBtn = document.getElementById('attachmentModalCloseBtn');
 const attachmentCaptionInput = document.getElementById('attachmentCaptionInput');
 const attachmentChooseAnotherBtn = document.getElementById('attachmentChooseAnotherBtn');
@@ -40,6 +44,9 @@ const attachmentSendBtn = document.getElementById('attachmentSendBtn');
 const mediaViewerModal = document.getElementById('mediaViewerModal');
 const mediaViewerContent = document.getElementById('mediaViewerContent');
 const mediaViewerCloseBtn = document.getElementById('mediaViewerCloseBtn');
+const mediaViewerPrevBtn = document.getElementById('mediaViewerPrevBtn');
+const mediaViewerNextBtn = document.getElementById('mediaViewerNextBtn');
+const mediaViewerCounter = document.getElementById('mediaViewerCounter');
 const composerDropHint = document.getElementById('composerDropHint');
 const profileModal = document.getElementById('profileModal');
 const closeProfileBtn = document.getElementById('closeProfileBtn');
@@ -97,8 +104,12 @@ let currentDialogState = {
   blockedByUser: false
 };
 let shouldStickToBottom = true;
-let pendingAttachment = null;
+let pendingAttachments = [];
+let pendingAttachmentIndex = 0;
 let isUploadingAttachment = false;
+let currentDialogMessages = [];
+let mediaViewerItems = [];
+let mediaViewerIndex = 0;
 let mediaRecorder = null;
 let mediaRecorderStream = null;
 let recordedChunks = [];
@@ -336,6 +347,55 @@ function syncAvatarElement(target, user, className = 'profile-avatar', alt = 'av
 }
 
 
+
+function getPendingAttachment() {
+  return pendingAttachments[pendingAttachmentIndex] || null;
+}
+
+function getCurrentDialogMediaItems() {
+  return currentDialogMessages
+    .filter((message) => !message?.deletedAt && message?.attachmentUrl && (message.attachmentType === 'image' || message.attachmentType === 'video'))
+    .map((message) => ({
+      url: resolveAssetUrl(message.attachmentUrl),
+      type: message.attachmentType,
+      name: message.attachmentName || (message.attachmentType === 'video' ? 'Видео' : 'Фото'),
+      id: message.id
+    }));
+}
+
+function updateMediaViewerControls() {
+  const hasMany = mediaViewerItems.length > 1;
+  if (mediaViewerPrevBtn) mediaViewerPrevBtn.classList.toggle('hidden', !hasMany);
+  if (mediaViewerNextBtn) mediaViewerNextBtn.classList.toggle('hidden', !hasMany);
+  if (mediaViewerCounter) {
+    mediaViewerCounter.classList.toggle('hidden', mediaViewerItems.length <= 1);
+    mediaViewerCounter.textContent = mediaViewerItems.length > 1 ? `${mediaViewerIndex + 1} / ${mediaViewerItems.length}` : '';
+  }
+}
+
+function renderMediaViewerItem() {
+  if (!mediaViewerModal || !mediaViewerContent || !mediaViewerItems.length) return;
+  const item = mediaViewerItems[mediaViewerIndex];
+  mediaViewerContent.innerHTML = '';
+  let node;
+  if (item.type === 'video') {
+    node = document.createElement('video');
+    node.className = 'media-viewer-video';
+    node.src = item.url;
+    node.controls = true;
+    node.autoplay = true;
+    node.playsInline = true;
+    node.preload = 'metadata';
+  } else {
+    node = document.createElement('img');
+    node.className = 'media-viewer-image';
+    node.src = item.url;
+    node.alt = item.name || 'Вложение';
+  }
+  mediaViewerContent.appendChild(node);
+  updateMediaViewerControls();
+}
+
 function closeMediaViewer() {
   if (!mediaViewerModal || !mediaViewerContent) return;
   mediaViewerModal.classList.add('hidden');
@@ -345,33 +405,51 @@ function closeMediaViewer() {
     try { video.load(); } catch (e) {}
   });
   mediaViewerContent.innerHTML = '';
+  mediaViewerItems = [];
+  mediaViewerIndex = 0;
+  updateMediaViewerControls();
 }
 
 function openMediaViewer(url, type, name) {
   if (!mediaViewerModal || !mediaViewerContent || !url) return;
-  mediaViewerContent.innerHTML = '';
-  let node;
-  if (type === 'video') {
-    node = document.createElement('video');
-    node.className = 'media-viewer-video';
-    node.src = url;
-    node.controls = true;
-    node.autoplay = true;
-    node.playsInline = true;
-    node.preload = 'metadata';
-  } else {
-    node = document.createElement('img');
-    node.className = 'media-viewer-image';
-    node.src = url;
-    node.alt = name || 'Вложение';
-  }
-  mediaViewerContent.appendChild(node);
+  const items = getCurrentDialogMediaItems();
+  const foundIndex = items.findIndex((item) => item.url === url);
+  mediaViewerItems = items.length ? items : [{ url, type, name }];
+  mediaViewerIndex = foundIndex >= 0 ? foundIndex : 0;
+  renderMediaViewerItem();
   mediaViewerModal.classList.remove('hidden');
+}
+
+function stepMediaViewer(direction) {
+  if (mediaViewerItems.length <= 1) return;
+  mediaViewerIndex = (mediaViewerIndex + direction + mediaViewerItems.length) % mediaViewerItems.length;
+  renderMediaViewerItem();
+}
+
+function clearAttachmentPreviewElement() {
+  if (attachmentModalPreview) {
+    attachmentModalPreview.querySelectorAll('[data-preview-url]').forEach((node) => {
+      try { URL.revokeObjectURL(node.dataset.previewUrl); } catch {}
+    });
+    attachmentModalPreview.innerHTML = '';
+  }
+  if (attachmentModalThumbs) attachmentModalThumbs.innerHTML = '';
+}
+
+function updateAttachmentPreviewControls() {
+  const hasMany = pendingAttachments.length > 1;
+  if (attachmentModalPrevBtn) attachmentModalPrevBtn.classList.toggle('hidden', !hasMany);
+  if (attachmentModalNextBtn) attachmentModalNextBtn.classList.toggle('hidden', !hasMany);
+  if (attachmentModalCounter) {
+    attachmentModalCounter.classList.toggle('hidden', !hasMany);
+    attachmentModalCounter.textContent = hasMany ? `${pendingAttachmentIndex + 1} / ${pendingAttachments.length}` : '';
+  }
+  if (attachmentModalThumbs) attachmentModalThumbs.classList.toggle('hidden', !hasMany);
 }
 
 function createAttachmentPreviewElement(file) {
   if (!file || !attachmentModalPreview) return;
-  clearAttachmentPreviewElement();
+  attachmentModalPreview.innerHTML = '';
   const previewUrl = URL.createObjectURL(file);
   let mediaNode;
 
@@ -399,44 +477,79 @@ function createAttachmentPreviewElement(file) {
   attachmentModalPreview.appendChild(mediaNode);
 }
 
-function clearAttachmentPreviewElement() {
-  if (!attachmentModalPreview) return;
-  attachmentModalPreview.querySelectorAll('[data-preview-url]').forEach((node) => {
-    try { URL.revokeObjectURL(node.dataset.previewUrl); } catch {}
+function renderAttachmentThumbs() {
+  if (!attachmentModalThumbs) return;
+  attachmentModalThumbs.innerHTML = '';
+  pendingAttachments.forEach((file, index) => {
+    const thumb = document.createElement(file.type.startsWith('video/') ? 'video' : 'img');
+    thumb.className = `attachment-thumb ${index === pendingAttachmentIndex ? 'active' : ''}`;
+    const thumbUrl = URL.createObjectURL(file);
+    thumb.dataset.previewUrl = thumbUrl;
+    thumb.src = thumbUrl;
+    if (thumb.tagName === 'VIDEO') {
+      thumb.muted = true;
+      thumb.playsInline = true;
+      thumb.preload = 'metadata';
+    }
+    thumb.alt = file.name || `Файл ${index + 1}`;
+    thumb.addEventListener('click', () => {
+      pendingAttachmentIndex = index;
+      renderPendingAttachmentPreview();
+    });
+    attachmentModalThumbs.appendChild(thumb);
   });
-  attachmentModalPreview.innerHTML = '';
+}
+
+function renderPendingAttachmentPreview() {
+  const file = getPendingAttachment();
+  if (!file) return;
+  createAttachmentPreviewElement(file);
+  renderAttachmentThumbs();
+  updateAttachmentPreviewControls();
+  if (attachmentModalTitle) {
+    if (pendingAttachments.length > 1) attachmentModalTitle.textContent = `Отправить файлы (${pendingAttachments.length})`;
+    else attachmentModalTitle.textContent = file.type.startsWith('video/') ? 'Отправить видео' : (file.type.startsWith('audio/') ? 'Отправить голосовое сообщение' : 'Отправить изображение');
+  }
 }
 
 function closeAttachmentModal() {
   if (attachmentModal) attachmentModal.classList.add('hidden');
   if (attachmentCaptionInput) attachmentCaptionInput.value = '';
   clearAttachmentPreviewElement();
-  pendingAttachment = null;
+  pendingAttachments = [];
+  pendingAttachmentIndex = 0;
   if (messageAttachmentInput) messageAttachmentInput.value = '';
   isUploadingAttachment = false;
   if (attachmentSendBtn) attachmentSendBtn.disabled = false;
 }
 
-function openAttachmentModal(file) {
-  if (!file) return;
-  pendingAttachment = file;
-  if (attachmentModalTitle) attachmentModalTitle.textContent = file.type.startsWith('video/') ? 'Отправить видео' : (file.type.startsWith('audio/') ? 'Отправить голосовое сообщение' : 'Отправить изображение');
+function openAttachmentModal(files) {
+  if (!files || !files.length) return;
+  pendingAttachments = files;
+  pendingAttachmentIndex = 0;
   if (attachmentCaptionInput) attachmentCaptionInput.value = messageInput.value.trim();
-  createAttachmentPreviewElement(file);
+  renderPendingAttachmentPreview();
   if (attachmentModal) attachmentModal.classList.remove('hidden');
 }
 
-function setPendingAttachment(file) {
-  if (!file) {
+function setPendingAttachment(input) {
+  const files = Array.isArray(input) ? input : Array.from(input?.length !== undefined ? input : [input]).filter(Boolean);
+  if (!files.length) {
     closeAttachmentModal();
     return;
   }
-  const isSupported = file.type.startsWith('image/') || file.type.startsWith('video/') || file.type.startsWith('audio/');
-  if (!isSupported) {
+  const unsupported = files.find((file) => !(file.type.startsWith('image/') || file.type.startsWith('video/') || file.type.startsWith('audio/')));
+  if (unsupported) {
     alert('Можно отправлять фото, видео и голосовые сообщения');
     return;
   }
-  openAttachmentModal(file);
+  openAttachmentModal(files);
+}
+
+function stepAttachmentPreview(direction) {
+  if (pendingAttachments.length <= 1) return;
+  pendingAttachmentIndex = (pendingAttachmentIndex + direction + pendingAttachments.length) % pendingAttachments.length;
+  renderPendingAttachmentPreview();
 }
 
 function formatAttachmentSize(file) {
@@ -448,33 +561,37 @@ function formatAttachmentSize(file) {
 function updateAttachmentSubtitle() {}
 
 async function sendPendingAttachment() {
-  if (!pendingAttachment || !currentDialogUser || !currentDialogState.canMessage || isUploadingAttachment) return;
+  if (!pendingAttachments.length || !currentDialogUser || !currentDialogState.canMessage || isUploadingAttachment) return;
   isUploadingAttachment = true;
   if (attachmentSendBtn) attachmentSendBtn.disabled = true;
   const caption = (attachmentCaptionInput?.value || '').trim();
-  const formData = new FormData();
-  formData.append('currentUserId', currentUser.id);
-  if (currentDialogUser?.type === 'group') formData.append('groupId', currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''));
-  else formData.append('recipientId', currentDialogUser.id);
-  formData.append('text', caption);
-  formData.append('file', pendingAttachment);
 
   try {
-    const response = await fetch(apiUrl('/api/messages/upload'), {
-      method: 'POST',
-      body: formData
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Не удалось отправить файл');
+    for (let index = 0; index < pendingAttachments.length; index += 1) {
+      const file = pendingAttachments[index];
+      const formData = new FormData();
+      formData.append('currentUserId', currentUser.id);
+      if (currentDialogUser?.type === 'group') formData.append('groupId', currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''));
+      else formData.append('recipientId', currentDialogUser.id);
+      formData.append('text', index === 0 ? caption : '');
+      formData.append('file', file);
+
+      const response = await fetch(apiUrl('/api/messages/upload'), {
+        method: 'POST',
+        body: formData
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Не удалось отправить файл');
+    }
     messageInput.value = '';
     closeAttachmentModal();
-    await loadUsers();
   } catch (error) {
-    alert(error.message || 'Не удалось отправить файл');
+    alert(error.message);
     isUploadingAttachment = false;
     if (attachmentSendBtn) attachmentSendBtn.disabled = false;
   }
 }
+
 
 function renderCurrentUser() {
   currentUserText.textContent = `${currentUser.name} · ${formatPhoneForDisplay(currentUser.phone)}`;
@@ -911,11 +1028,15 @@ function createMessageNode(message) {
 }
 
 function addMessage(message) {
+  currentDialogMessages.push(message);
   chat.appendChild(createMessageNode(message));
   scrollChatToBottom();
 }
 
 function upsertMessage(message) {
+  const index = currentDialogMessages.findIndex((item) => item.id === message.id);
+  if (index >= 0) currentDialogMessages[index] = message;
+  else currentDialogMessages.push(message);
   const existing = chat.querySelector(`.message[data-id="${message.id}"]`);
   const replacement = createMessageNode(message);
   if (existing) existing.replaceWith(replacement);
@@ -1077,7 +1198,9 @@ async function selectDialog(userId) {
 
   chat.innerHTML = '';
   shouldStickToBottom = true;
-  (data.messages || []).forEach((message) => {
+  currentDialogMessages = [];
+  currentDialogMessages = data.messages || [];
+  currentDialogMessages.forEach((message) => {
     chat.appendChild(createMessageNode(message));
   });
   scrollChatToBottom(true);
@@ -1599,8 +1722,10 @@ if (groupModal) groupModal.addEventListener('click', (event) => { if (event.targ
 
 if (messageAttachmentInput) {
   messageAttachmentInput.addEventListener('change', () => {
-    const file = messageAttachmentInput.files[0];
-    if (file) setPendingAttachment(file);
+    const files = Array.from(messageAttachmentInput.files || []);
+    if (!files.length) return;
+    if (!pendingAttachments.length || attachmentModal.classList.contains('hidden')) setPendingAttachment(files);
+    else setPendingAttachment([...pendingAttachments, ...files]);
   });
 }
 
@@ -1764,3 +1889,19 @@ window.addEventListener('load', async () => {
 });
 
 loadSavedTheme();
+if (attachmentModalPrevBtn) attachmentModalPrevBtn.addEventListener('click', () => stepAttachmentPreview(-1));
+if (attachmentModalNextBtn) attachmentModalNextBtn.addEventListener('click', () => stepAttachmentPreview(1));
+if (mediaViewerPrevBtn) mediaViewerPrevBtn.addEventListener('click', () => stepMediaViewer(-1));
+if (mediaViewerNextBtn) mediaViewerNextBtn.addEventListener('click', () => stepMediaViewer(1));
+document.addEventListener('keydown', (event) => {
+  if (!attachmentModal?.classList.contains('hidden')) {
+    if (event.key === 'ArrowLeft') stepAttachmentPreview(-1);
+    if (event.key === 'ArrowRight') stepAttachmentPreview(1);
+  }
+  if (!mediaViewerModal?.classList.contains('hidden')) {
+    if (event.key === 'ArrowLeft') stepMediaViewer(-1);
+    if (event.key === 'ArrowRight') stepMediaViewer(1);
+    if (event.key === 'Escape') closeMediaViewer();
+  }
+});
+
