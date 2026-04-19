@@ -75,16 +75,19 @@ function mapMessageRow(row) {
     senderId: String(row.sender_id),
     senderName: row.sender_name,
     senderPhone: row.sender_phone,
-    recipientId: String(row.recipient_id),
-    recipientName: row.recipient_name,
-    recipientPhone: row.recipient_phone,
+    recipientId: row.recipient_id ? String(row.recipient_id) : '',
+    recipientName: row.recipient_name || '',
+    recipientPhone: row.recipient_phone || '',
     deliveredAt: row.delivered_at,
     readAt: row.read_at,
     editedAt: row.edited_at,
     deletedAt: row.deleted_at,
     attachmentUrl: row.attachment_url || '',
     attachmentType: row.attachment_type || '',
-    attachmentName: row.attachment_name || ''
+    attachmentName: row.attachment_name || '',
+    groupId: row.group_id || '',
+    groupName: row.group_name || '',
+    isGroup: Boolean(row.group_id)
   };
 }
 
@@ -128,6 +131,33 @@ async function initDatabase() {
   `);
 
   await query(`
+    CREATE TABLE IF NOT EXISTS groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS group_members (
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (group_id, user_id)
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS group_read_state (
+      group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      last_read_at TIMESTAMPTZ NULL,
+      PRIMARY KEY (group_id, user_id)
+    );
+  `);
+
+  await query(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       dialog_id TEXT NOT NULL,
@@ -142,12 +172,14 @@ async function initDatabase() {
     );
   `);
 
+  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS group_id TEXT NULL REFERENCES groups(id) ON DELETE CASCADE;`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_type TEXT NOT NULL DEFAULT '';`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT NOT NULL DEFAULT '';`);
 
   await query('CREATE INDEX IF NOT EXISTS idx_messages_dialog_id_created_at ON messages(dialog_id, created_at DESC);');
   await query('CREATE INDEX IF NOT EXISTS idx_messages_recipient_unread ON messages(recipient_id, read_at, deleted_at);');
+  await query('CREATE INDEX IF NOT EXISTS idx_messages_group_created_at ON messages(group_id, created_at DESC);');
 }
 
 async function getUserById(userId) {
@@ -158,6 +190,47 @@ async function getUserById(userId) {
 async function getUserByPhone(phone) {
   const result = await query('SELECT * FROM users WHERE phone = $1 LIMIT 1', [normalizePhone(phone)]);
   return mapUserRow(result.rows[0]);
+}
+
+async function getGroupById(groupId) {
+  const result = await query('SELECT * FROM groups WHERE id = $1 LIMIT 1', [String(groupId)]);
+  return result.rows[0] || null;
+}
+
+async function getGroupMemberIds(groupId) {
+  const result = await query('SELECT user_id FROM group_members WHERE group_id = $1 ORDER BY created_at ASC', [String(groupId)]);
+  return result.rows.map((row) => String(row.user_id));
+}
+
+async function getFullMessageById(messageId) {
+  const result = await query(
+    `SELECT
+        m.*,
+        su.name AS sender_name,
+        su.phone AS sender_phone,
+        ru.name AS recipient_name,
+        ru.phone AS recipient_phone,
+        g.name AS group_name
+     FROM messages m
+     INNER JOIN users su ON su.id = m.sender_id
+     LEFT JOIN users ru ON ru.id = m.recipient_id
+     LEFT JOIN groups g ON g.id = m.group_id
+     WHERE m.id = $1`,
+    [String(messageId)]
+  );
+  return mapMessageRow(result.rows[0]);
+}
+
+async function broadcastMessageEvent(eventName, message) {
+  if (!message) return;
+  if (message.isGroup && message.groupId) {
+    const memberIds = await getGroupMemberIds(message.groupId);
+    memberIds.forEach((userId) => {
+      io.to(`user:${userId}`).emit(eventName, message);
+    });
+    return;
+  }
+  io.to(`user:${message.senderId}`).to(`user:${message.recipientId}`).emit(eventName, message);
 }
 
 async function getBlockedIds(userId) {
@@ -475,6 +548,174 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
+app.get('/api/groups', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const currentUser = await getUserById(currentUserId);
+    if (!currentUser) return res.json({ groups: [] });
+
+    const result = await query(
+      `WITH memberships AS (
+          SELECT gm.group_id
+          FROM group_members gm
+          WHERE gm.user_id = $1
+        ),
+        last_messages AS (
+          SELECT DISTINCT ON (m.group_id)
+            m.group_id,
+            m.text,
+            m.created_at,
+            m.sender_id,
+            m.deleted_at,
+            m.attachment_type,
+            m.attachment_name
+          FROM messages m
+          INNER JOIN memberships ms ON ms.group_id = m.group_id
+          WHERE m.group_id IS NOT NULL
+          ORDER BY m.group_id, m.created_at DESC
+        ),
+        unread_counts AS (
+          SELECT m.group_id, COUNT(*)::int AS unread_count
+          FROM messages m
+          INNER JOIN memberships ms ON ms.group_id = m.group_id
+          LEFT JOIN group_read_state grs ON grs.group_id = m.group_id AND grs.user_id = $1
+          WHERE m.group_id IS NOT NULL
+            AND m.sender_id <> $1
+            AND m.deleted_at IS NULL
+            AND m.created_at > COALESCE(grs.last_read_at, TO_TIMESTAMP(0))
+          GROUP BY m.group_id
+        ),
+        members_agg AS (
+          SELECT gm.group_id, ARRAY_AGG(gm.user_id ORDER BY gm.created_at ASC) AS member_ids
+          FROM group_members gm
+          INNER JOIN memberships ms ON ms.group_id = gm.group_id
+          GROUP BY gm.group_id
+        )
+       SELECT g.*, lm.text AS last_message_text, lm.created_at AS last_message_created_at,
+              lm.sender_id AS last_message_sender_id, lm.deleted_at AS last_message_deleted_at,
+              lm.attachment_type AS last_message_attachment_type, lm.attachment_name AS last_message_attachment_name,
+              COALESCE(uc.unread_count, 0) AS unread_count, ma.member_ids
+       FROM groups g
+       INNER JOIN memberships ms ON ms.group_id = g.id
+       LEFT JOIN last_messages lm ON lm.group_id = g.id
+       LEFT JOIN unread_counts uc ON uc.group_id = g.id
+       LEFT JOIN members_agg ma ON ma.group_id = g.id
+       ORDER BY COALESCE(lm.created_at, g.created_at) DESC, g.name ASC`,
+      [currentUserId]
+    );
+
+    res.json({ groups: result.rows.map((row) => ({
+      id: `group:${row.id}`,
+      rawId: row.id,
+      type: 'group',
+      name: row.name,
+      photo: '',
+      memberIds: row.member_ids || [],
+      hasDialog: true,
+      canMessage: true,
+      unreadCount: Number(row.unread_count || 0),
+      lastMessage: row.last_message_created_at ? {
+        text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
+        createdAt: row.last_message_created_at,
+        senderId: String(row.last_message_sender_id),
+        deletedAt: row.last_message_deleted_at || null,
+        attachmentType: row.last_message_attachment_type || '',
+        attachmentName: row.last_message_attachment_name || ''
+      } : null
+    })) });
+  } catch (error) {
+    console.error('groups error', error);
+    res.status(500).json({ error: 'Не удалось получить список бесед' });
+  }
+});
+
+app.post('/api/groups', async (req, res) => {
+  try {
+    const currentUserId = String(req.body?.currentUserId || '');
+    const name = String(req.body?.name || '').trim();
+    const memberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds.map((id) => String(id)) : [];
+    if (!name || name.length < 2) return res.status(400).json({ error: 'Введите название беседы' });
+    const currentUser = await getUserById(currentUserId);
+    if (!currentUser) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    const uniqueMemberIds = [...new Set([currentUserId, ...memberIds])];
+    if (uniqueMemberIds.length < 2) return res.status(400).json({ error: 'Выберите хотя бы одного участника' });
+
+    const validMembers = await query('SELECT id FROM users WHERE id = ANY($1::text[])', [uniqueMemberIds]);
+    if (validMembers.rowCount !== uniqueMemberIds.length) return res.status(400).json({ error: 'Некоторые участники не найдены' });
+
+    const groupId = crypto.randomUUID();
+    await query('INSERT INTO groups (id, name, created_by) VALUES ($1, $2, $3)', [groupId, name, currentUserId]);
+    for (const userId of uniqueMemberIds) {
+      await query('INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [groupId, userId]);
+      await query('INSERT INTO group_read_state (group_id, user_id, last_read_at) VALUES ($1, $2, NOW()) ON CONFLICT (group_id, user_id) DO NOTHING', [groupId, userId]);
+    }
+
+    const group = await getGroupById(groupId);
+    const responseGroup = {
+      id: `group:${group.id}`,
+      rawId: group.id,
+      type: 'group',
+      name: group.name,
+      photo: '',
+      memberIds: uniqueMemberIds,
+      hasDialog: true,
+      canMessage: true,
+      unreadCount: 0,
+      lastMessage: null
+    };
+    uniqueMemberIds.forEach((userId) => io.to(`user:${userId}`).emit('group:updated', responseGroup));
+    res.json({ group: responseGroup });
+  } catch (error) {
+    console.error('group create error', error);
+    res.status(500).json({ error: 'Не удалось создать беседу' });
+  }
+});
+
+app.get('/api/groups/:groupId/messages', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const groupId = String(req.params.groupId || '');
+    const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, currentUserId]);
+    if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
+
+    const result = await query(
+      `SELECT m.*, su.name AS sender_name, su.phone AS sender_phone, '' AS recipient_name, '' AS recipient_phone, g.name AS group_name
+       FROM messages m
+       INNER JOIN users su ON su.id = m.sender_id
+       INNER JOIN groups g ON g.id = m.group_id
+       WHERE m.group_id = $1
+       ORDER BY m.created_at ASC`,
+      [groupId]
+    );
+
+    await query(
+      `INSERT INTO group_read_state (group_id, user_id, last_read_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (group_id, user_id) DO UPDATE SET last_read_at = NOW()`,
+      [groupId, currentUserId]
+    );
+
+    res.json({ messages: result.rows.map(mapMessageRow), canMessage: true, isBlocked: false, blockedByUser: false });
+  } catch (error) {
+    console.error('group messages fetch error', error);
+    res.status(500).json({ error: 'Не удалось получить сообщения беседы' });
+  }
+});
+
+app.get('/api/users/all', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const currentUser = await getUserById(currentUserId);
+    if (!currentUser) return res.json({ users: [] });
+    const result = await query('SELECT * FROM users WHERE id <> $1 ORDER BY name ASC', [currentUserId]);
+    res.json({ users: result.rows.map((row) => publicUser(mapUserRow(row), currentUserId)) });
+  } catch (error) {
+    console.error('all users error', error);
+    res.status(500).json({ error: 'Не удалось получить пользователей' });
+  }
+});
+
 app.get('/api/messages/:otherUserId', async (req, res) => {
   try {
     const currentUserId = String(req.query.currentUserId || '');
@@ -556,22 +797,8 @@ app.put('/api/messages/:messageId', async (req, res) => {
       [messageId, text]
     );
 
-    const fullMessage = await query(
-      `SELECT
-          m.*,
-          su.name AS sender_name,
-          su.phone AS sender_phone,
-          ru.name AS recipient_name,
-          ru.phone AS recipient_phone
-       FROM messages m
-       INNER JOIN users su ON su.id = m.sender_id
-       INNER JOIN users ru ON ru.id = m.recipient_id
-       WHERE m.id = $1`,
-      [messageId]
-    );
-
-    const payload = mapMessageRow(fullMessage.rows[0]);
-    io.to(`user:${payload.senderId}`).to(`user:${payload.recipientId}`).emit('message:updated', payload);
+    const payload = await getFullMessageById(messageId);
+    await broadcastMessageEvent('message:updated', payload);
     res.json({ message: payload });
   } catch (error) {
     console.error('message edit error', error);
@@ -600,22 +827,8 @@ app.delete('/api/messages/:messageId', async (req, res) => {
       [messageId]
     );
 
-    const fullMessage = await query(
-      `SELECT
-          m.*,
-          su.name AS sender_name,
-          su.phone AS sender_phone,
-          ru.name AS recipient_name,
-          ru.phone AS recipient_phone
-       FROM messages m
-       INNER JOIN users su ON su.id = m.sender_id
-       INNER JOIN users ru ON ru.id = m.recipient_id
-       WHERE m.id = $1`,
-      [messageId]
-    );
-
-    const payload = mapMessageRow(fullMessage.rows[0]);
-    io.to(`user:${payload.senderId}`).to(`user:${payload.recipientId}`).emit('message:deleted', payload);
+    const payload = await getFullMessageById(messageId);
+    await broadcastMessageEvent('message:deleted', payload);
     res.json({ message: payload });
   } catch (error) {
     console.error('message delete error', error);
@@ -628,10 +841,11 @@ app.post('/api/messages/upload', upload.single('file'), async (req, res) => {
   try {
     const senderId = String(req.body?.currentUserId || '');
     const recipientId = String(req.body?.recipientId || '');
+    const groupId = String(req.body?.groupId || '');
     const text = String(req.body?.text || '').trim();
     const file = req.file;
 
-    if (!senderId || !recipientId) {
+    if (!senderId || (!recipientId && !groupId)) {
       return res.status(400).json({ error: 'Не выбран получатель' });
     }
     if (!file) {
@@ -639,58 +853,55 @@ app.post('/api/messages/upload', upload.single('file'), async (req, res) => {
     }
 
     const sender = await getUserById(senderId);
-    const recipient = await getUserById(recipientId);
-    if (!sender || !recipient) {
+    if (!sender) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
-    if (await areUsersBlocked(sender.id, recipient.id)) {
-      return res.status(403).json({ error: 'Отправка сообщений недоступна' });
+
+    let dialogId = '';
+    let storedRecipientId = senderId;
+    let deliveredAt = null;
+
+    if (groupId) {
+      const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, senderId]);
+      if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
+      dialogId = `group:${groupId}`;
+      await query(
+        `INSERT INTO group_read_state (group_id, user_id, last_read_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (group_id, user_id) DO UPDATE SET last_read_at = NOW()`,
+        [groupId, senderId]
+      );
+    } else {
+      const recipient = await getUserById(recipientId);
+      if (!recipient) {
+        return res.status(404).json({ error: 'Пользователь не найден' });
+      }
+      if (await areUsersBlocked(sender.id, recipient.id)) {
+        return res.status(403).json({ error: 'Отправка сообщений недоступна' });
+      }
+      dialogId = makeDialogId(sender.id, recipient.id);
+      storedRecipientId = String(recipient.id);
+      deliveredAt = onlineUsers.has(String(recipient.id)) ? new Date().toISOString() : null;
     }
 
-    const isSupported = /^image\//.test(file.mimetype) || /^video\//.test(file.mimetype);
+    const isSupported = /^image\//.test(file.mimetype) || /^video\//.test(file.mimetype) || /^audio\//.test(file.mimetype);
     if (!isSupported) {
-      return res.status(400).json({ error: 'Можно отправлять только фото и видео' });
+      return res.status(400).json({ error: 'Можно отправлять фото, видео и голосовые сообщения' });
     }
 
-    const dialogId = makeDialogId(sender.id, recipient.id);
-    const recipientOnline = onlineUsers.has(String(recipient.id));
     const messageId = crypto.randomUUID();
-    const attachmentType = /^image\//.test(file.mimetype) ? 'image' : 'video';
+    const attachmentType = /^image\//.test(file.mimetype) ? 'image' : /^video\//.test(file.mimetype) ? 'video' : 'audio';
     const attachmentUrl = `/uploads/${file.filename}`;
 
     await query(
       `INSERT INTO messages (
-        id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name
-      ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9)`,
-      [
-        messageId,
-        dialogId,
-        text,
-        String(sender.id),
-        String(recipient.id),
-        recipientOnline ? new Date().toISOString() : null,
-        attachmentUrl,
-        attachmentType,
-        file.originalname || file.filename
-      ]
+        id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, group_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9, $10)`,
+      [messageId, dialogId, text, String(sender.id), storedRecipientId, deliveredAt, attachmentUrl, attachmentType, file.originalname || file.filename, groupId || null]
     );
 
-    const fullMessage = await query(
-      `SELECT
-          m.*,
-          su.name AS sender_name,
-          su.phone AS sender_phone,
-          ru.name AS recipient_name,
-          ru.phone AS recipient_phone
-       FROM messages m
-       INNER JOIN users su ON su.id = m.sender_id
-       INNER JOIN users ru ON ru.id = m.recipient_id
-       WHERE m.id = $1`,
-      [messageId]
-    );
-
-    const message = mapMessageRow(fullMessage.rows[0]);
-    io.to(`user:${sender.id}`).to(`user:${recipient.id}`).emit('private-message', message);
+    const message = await getFullMessageById(messageId);
+    await broadcastMessageEvent('private-message', message);
     res.json({ message });
   } catch (error) {
     console.error('message upload error', error);
@@ -712,6 +923,9 @@ io.on('connection', (socket) => {
       socket.data.user = user;
       socket.join(`user:${user.id}`);
 
+      const groups = await query('SELECT group_id FROM group_members WHERE user_id = $1', [String(user.id)]);
+      groups.rows.forEach((row) => socket.join(`group:${row.group_id}`));
+
       const count = onlineUsers.get(user.id) || 0;
       onlineUsers.set(user.id, count + 1);
       emitPresence(user.id, true);
@@ -719,7 +933,7 @@ io.on('connection', (socket) => {
       const delivered = await query(
         `UPDATE messages
          SET delivered_at = NOW()
-         WHERE recipient_id = $1 AND delivered_at IS NULL
+         WHERE recipient_id = $1 AND delivered_at IS NULL AND group_id IS NULL
          RETURNING *`,
         [String(user.id)]
       );
@@ -729,11 +943,25 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('open-dialog', async ({ currentUserId, otherUserId }) => {
+  socket.on('open-dialog', async ({ currentUserId, otherUserId, groupId }) => {
     try {
       const currentId = String(currentUserId || '');
+      if (!currentId) return;
+      if (groupId) {
+        const normalizedGroupId = String(groupId || '');
+        const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [normalizedGroupId, currentId]);
+        if (!membership.rowCount) return;
+        await query(
+          `INSERT INTO group_read_state (group_id, user_id, last_read_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (group_id, user_id) DO UPDATE SET last_read_at = NOW()`,
+          [normalizedGroupId, currentId]
+        );
+        return;
+      }
+
       const otherId = String(otherUserId || '');
-      if (!currentId || !otherId) return;
+      if (!otherId) return;
       if (await areUsersBlocked(currentId, otherId)) return;
 
       const dialogId = makeDialogId(currentId, otherId);
@@ -744,6 +972,7 @@ io.on('connection', (socket) => {
            read_at = COALESCE(read_at, NOW())
          WHERE dialog_id = $1
            AND recipient_id = $2
+           AND group_id IS NULL
            AND deleted_at IS NULL
            AND (delivered_at IS NULL OR read_at IS NULL)
          RETURNING *`,
@@ -773,34 +1002,45 @@ io.on('connection', (socket) => {
         `INSERT INTO messages (
           id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at
          ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL)`,
-        [
-          messageId,
-          dialogId,
-          String(payload.text).trim(),
-          String(sender.id),
-          String(recipient.id),
-          recipientOnline ? new Date().toISOString() : null
-        ]
+        [messageId, dialogId, String(payload.text).trim(), String(sender.id), String(recipient.id), recipientOnline ? new Date().toISOString() : null]
       );
 
-      const fullMessage = await query(
-        `SELECT
-            m.*,
-            su.name AS sender_name,
-            su.phone AS sender_phone,
-            ru.name AS recipient_name,
-            ru.phone AS recipient_phone
-         FROM messages m
-         INNER JOIN users su ON su.id = m.sender_id
-         INNER JOIN users ru ON ru.id = m.recipient_id
-         WHERE m.id = $1`,
-        [messageId]
-      );
-
-      const message = mapMessageRow(fullMessage.rows[0]);
-      io.to(`user:${sender.id}`).to(`user:${recipient.id}`).emit('private-message', message);
+      const message = await getFullMessageById(messageId);
+      await broadcastMessageEvent('private-message', message);
     } catch (error) {
       console.error('send-private-message error', error);
+    }
+  });
+
+  socket.on('send-group-message', async (payload) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser || !payload?.text?.trim() || !payload?.groupId) return;
+      const sender = await getUserById(activeUser.id);
+      if (!sender) return;
+      const groupId = String(payload.groupId);
+      const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, sender.id]);
+      if (!membership.rowCount) return;
+
+      const messageId = crypto.randomUUID();
+      await query(
+        `INSERT INTO messages (
+          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, group_id
+         ) VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, $6)`,
+        [messageId, `group:${groupId}`, String(payload.text).trim(), String(sender.id), String(sender.id), groupId]
+      );
+
+      await query(
+        `INSERT INTO group_read_state (group_id, user_id, last_read_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (group_id, user_id) DO UPDATE SET last_read_at = NOW()`,
+        [groupId, sender.id]
+      );
+
+      const message = await getFullMessageById(messageId);
+      await broadcastMessageEvent('private-message', message);
+    } catch (error) {
+      console.error('send-group-message error', error);
     }
   });
 

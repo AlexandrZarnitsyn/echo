@@ -87,9 +87,10 @@
           <div class="chat hidden" id="chat"></div>
 
           <div class="input-area hidden" id="inputArea">
-            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*" />
+            <input id="messageAttachmentInput" class="hidden-file-input" type="file" accept="image/*,video/*,audio/*" />
             <div class="composer-row">
-              <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить фото или видео" aria-label="Прикрепить фото или видео">+</button>
+              <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить файл" aria-label="Прикрепить файл">+</button>
+              <button class="attach-btn" id="voiceRecordBtn" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение">🎤</button>
               <input id="messageInput" type="text" placeholder="Введите сообщение..." />
               <button id="sendBtn">Отправить</button>
             </div>
