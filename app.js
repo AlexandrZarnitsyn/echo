@@ -415,6 +415,28 @@ function updateDialogProfileTriggerState() {
     : 'Сначала выберите диалог';
 }
 
+
+function updateOpenContactProfilePresence() {
+  if (!contactProfileModal || contactProfileModal.classList.contains('hidden')) return;
+  if (!contactProfileStatus) return;
+
+  if (currentDialogUser?.type === 'group') {
+    const count = Array.isArray(currentDialogUser.memberIds) ? currentDialogUser.memberIds.length : 0;
+    contactProfileStatus.textContent = count ? `Участников: ${count}` : 'Групповая беседа';
+    return;
+  }
+
+  const source = currentDialogProfile || currentDialogUser;
+  if (!source) return;
+  contactProfileStatus.textContent = getPresenceText(source);
+  if (contactProfileLastSeen) {
+    const sourceId = String(source.id || '');
+    contactProfileLastSeen.textContent = onlineUserIds.has(sourceId)
+      ? 'сейчас в сети'
+      : formatTelegramLastSeen(source.lastSeenAt || lastSeenMap[sourceId] || null);
+  }
+}
+
 async function openContactProfile() {
   if (!currentDialogUser || !contactProfileModal) return;
 
@@ -1736,8 +1758,43 @@ function restoreDialogsCache() {
 
 async function loadUsers() {
   const search = searchInput.value.trim();
-  const response = await fetch(apiUrl(`/api/dialogs/bootstrap?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`));
-  const data = await response.json();
+  let data = null;
+
+  try {
+    const response = await fetch(apiUrl(`/api/dialogs/bootstrap?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`));
+    let parsed = null;
+    try {
+      parsed = await response.json();
+    } catch (_) {
+      parsed = null;
+    }
+    if (!response.ok) throw new Error(parsed?.error || 'bootstrap failed');
+    data = parsed;
+  } catch (error) {
+    console.warn('bootstrap dialogs failed, using fallback', error);
+  }
+
+  if (!data || (!Array.isArray(data.users) && !Array.isArray(data.groups))) {
+    const [usersResponse, groupsResponse, presenceResponse] = await Promise.all([
+      fetch(apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)),
+      fetch(apiUrl(`/api/groups?currentUserId=${encodeURIComponent(currentUser.id)}`)),
+      fetch(apiUrl('/api/presence'))
+    ]);
+
+    const [usersData, groupsData, presenceData] = await Promise.all([
+      usersResponse.json().catch(() => ({ users: [] })),
+      groupsResponse.json().catch(() => ({ groups: [] })),
+      presenceResponse.json().catch(() => ({ onlineUserIds: [], lastSeenMap: {} }))
+    ]);
+
+    data = {
+      users: Array.isArray(usersData?.users) ? usersData.users : [],
+      groups: Array.isArray(groupsData?.groups) ? groupsData.groups : [],
+      onlineUserIds: Array.isArray(presenceData?.onlineUserIds) ? presenceData.onlineUserIds : [],
+      lastSeenMap: presenceData?.lastSeenMap || {}
+    };
+  }
+
   applyBootstrapPayload(data, { search });
   saveDialogsCache();
 

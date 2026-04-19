@@ -175,16 +175,31 @@ async function fetchUsersList(currentUserId, search = '') {
         SELECT blocker_id FROM user_blocks WHERE blocked_id = $1
       ),
       last_messages AS (
-        SELECT DISTINCT ON (m.dialog_id)
-          m.dialog_id,
-          m.text,
-          m.created_at,
-          m.sender_id,
-          m.deleted_at,
-          m.attachment_type,
-          m.attachment_name
-        FROM messages m
-        ORDER BY m.dialog_id, m.created_at DESC
+        SELECT DISTINCT ON (private_dialog_id)
+          private_dialog_id AS dialog_id,
+          text,
+          created_at,
+          sender_id,
+          deleted_at,
+          attachment_type,
+          attachment_name
+        FROM (
+          SELECT
+            CASE
+              WHEN m.group_id IS NOT NULL THEN NULL
+              WHEN m.sender_id < m.recipient_id THEN m.sender_id || ':' || m.recipient_id
+              ELSE m.recipient_id || ':' || m.sender_id
+            END AS private_dialog_id,
+            m.text,
+            m.created_at,
+            m.sender_id,
+            m.deleted_at,
+            m.attachment_type,
+            m.attachment_name
+          FROM messages m
+        ) private_messages
+        WHERE private_dialog_id IS NOT NULL
+        ORDER BY private_dialog_id, created_at DESC
       ),
       unread_counts AS (
         SELECT sender_id, COUNT(*)::int AS unread_count
