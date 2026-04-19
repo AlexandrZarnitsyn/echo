@@ -227,6 +227,40 @@ async function getGroupMemberIds(groupId) {
   return result.rows.map((row) => String(row.user_id));
 }
 
+async function getEligibleDialogUsers(currentUserId, { excludeGroupId = '' } = {}) {
+  const params = [String(currentUserId)];
+  let excludeSql = '';
+  if (excludeGroupId) {
+    params.push(String(excludeGroupId));
+    excludeSql = ' AND u.id NOT IN (SELECT gm.user_id FROM group_members gm WHERE gm.group_id = $2)';
+  }
+  const result = await query(
+    `WITH viewer_blocks AS (
+        SELECT blocked_id FROM user_blocks WHERE blocker_id = $1
+      ),
+      blocked_me AS (
+        SELECT blocker_id FROM user_blocks WHERE blocked_id = $1
+      ),
+      dialog_users AS (
+        SELECT DISTINCT CASE WHEN m.sender_id = $1 THEN m.recipient_id ELSE m.sender_id END AS user_id
+        FROM messages m
+        WHERE m.group_id IS NULL
+          AND (m.sender_id = $1 OR m.recipient_id = $1)
+      )
+     SELECT u.*
+     FROM users u
+     INNER JOIN dialog_users du ON du.user_id = u.id
+     LEFT JOIN viewer_blocks vb ON vb.blocked_id = u.id
+     LEFT JOIN blocked_me bm ON bm.blocker_id = u.id
+     WHERE u.id <> $1
+       AND vb.blocked_id IS NULL
+       AND bm.blocker_id IS NULL` + excludeSql + `
+     ORDER BY u.name ASC`,
+    params
+  );
+  return result.rows.map((row) => publicUser(mapUserRow(row), currentUserId));
+}
+
 async function getFullMessageById(messageId) {
   const result = await query(
     `SELECT
@@ -682,6 +716,34 @@ app.get('/api/groups', async (req, res) => {
   }
 });
 
+
+app.get('/api/groups/eligible-users', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const currentUser = await getUserById(currentUserId);
+    if (!currentUser) return res.json({ users: [] });
+    const users = await getEligibleDialogUsers(currentUserId);
+    res.json({ users });
+  } catch (error) {
+    console.error('group eligible users error', error);
+    res.status(500).json({ error: 'Не удалось получить доступных участников' });
+  }
+});
+
+app.get('/api/groups/:groupId/eligible-users', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const groupId = String(req.params.groupId || '');
+    const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, currentUserId]);
+    if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
+    const users = await getEligibleDialogUsers(currentUserId, { excludeGroupId: groupId });
+    res.json({ users });
+  } catch (error) {
+    console.error('group add eligible users error', error);
+    res.status(500).json({ error: 'Не удалось получить пользователей для добавления' });
+  }
+});
+
 app.post('/api/groups', async (req, res) => {
   try {
     const currentUserId = String(req.body?.currentUserId || '');
@@ -694,8 +756,10 @@ app.post('/api/groups', async (req, res) => {
     const uniqueMemberIds = [...new Set([currentUserId, ...memberIds])];
     if (uniqueMemberIds.length < 2) return res.status(400).json({ error: 'Выберите хотя бы одного участника' });
 
-    const validMembers = await query('SELECT id FROM users WHERE id = ANY($1::text[])', [uniqueMemberIds]);
-    if (validMembers.rowCount !== uniqueMemberIds.length) return res.status(400).json({ error: 'Некоторые участники не найдены' });
+    const eligibleUsers = await getEligibleDialogUsers(currentUserId);
+    const eligibleIds = new Set(eligibleUsers.map((user) => String(user.id)));
+    const invalidMemberId = uniqueMemberIds.find((id) => id !== currentUserId && !eligibleIds.has(String(id)));
+    if (invalidMemberId) return res.status(400).json({ error: 'Можно добавить только пользователей, с которыми у вас уже есть диалог' });
 
     const groupId = crypto.randomUUID();
     await query('INSERT INTO groups (id, name, created_by) VALUES ($1, $2, $3)', [groupId, name, currentUserId]);
@@ -722,6 +786,51 @@ app.post('/api/groups', async (req, res) => {
   } catch (error) {
     console.error('group create error', error);
     res.status(500).json({ error: 'Не удалось создать беседу' });
+  }
+});
+
+
+app.post('/api/groups/:groupId/members', async (req, res) => {
+  try {
+    const currentUserId = String(req.body?.currentUserId || '');
+    const groupId = String(req.params.groupId || '');
+    const memberIds = Array.isArray(req.body?.memberIds) ? [...new Set(req.body.memberIds.map((id) => String(id)).filter(Boolean))] : [];
+    if (!memberIds.length) return res.status(400).json({ error: 'Выберите хотя бы одного участника' });
+
+    const currentUser = await getUserById(currentUserId);
+    if (!currentUser) return res.status(404).json({ error: 'Пользователь не найден' });
+    const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, currentUserId]);
+    if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
+
+    const eligibleUsers = await getEligibleDialogUsers(currentUserId, { excludeGroupId: groupId });
+    const eligibleIds = new Set(eligibleUsers.map((user) => String(user.id)));
+    const invalidMemberId = memberIds.find((id) => !eligibleIds.has(String(id)));
+    if (invalidMemberId) return res.status(400).json({ error: 'Можно добавить только пользователей, с которыми у вас уже есть диалог и которых ещё нет в беседе' });
+
+    for (const userId of memberIds) {
+      await query('INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [groupId, userId]);
+      await query('INSERT INTO group_read_state (group_id, user_id, last_read_at) VALUES ($1, $2, NOW()) ON CONFLICT (group_id, user_id) DO NOTHING', [groupId, userId]);
+    }
+
+    const group = await getGroupById(groupId);
+    const updatedMemberIds = await getGroupMemberIds(groupId);
+    const responseGroup = {
+      id: `group:${group.id}`,
+      rawId: group.id,
+      type: 'group',
+      name: group.name,
+      photo: '',
+      memberIds: updatedMemberIds,
+      hasDialog: true,
+      canMessage: true,
+      unreadCount: 0,
+      lastMessage: null
+    };
+    updatedMemberIds.forEach((userId) => io.to(`user:${userId}`).emit('group:updated', responseGroup));
+    res.json({ group: responseGroup, addedMemberIds: memberIds });
+  } catch (error) {
+    console.error('group add members error', error);
+    res.status(500).json({ error: 'Не удалось добавить участников' });
   }
 });
 

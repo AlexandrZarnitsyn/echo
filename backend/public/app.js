@@ -83,12 +83,19 @@ const createGroupBtn = document.getElementById('createGroupBtn');
 const groupModal = document.getElementById('groupModal');
 const groupNameInput = document.getElementById('groupNameInput');
 const groupMembersList = document.getElementById('groupMembersList');
+const groupModalTitle = document.getElementById('groupModalTitle');
+const groupNameWrap = document.getElementById('groupNameWrap');
 const cancelGroupBtn = document.getElementById('cancelGroupBtn');
 const saveGroupBtn = document.getElementById('saveGroupBtn');
+const addGroupMembersBtn = document.getElementById('addGroupMembersBtn');
 
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
 const SOCKET_URL = String(APP_CONFIG.SOCKET_URL || API_BASE_URL || '').replace(/\/$/, '');
+const groupModalState = {
+  mode: 'create',
+  groupId: ''
+};
 
 function apiUrl(path) {
   if (!path.startsWith('/')) return `${API_BASE_URL}/${path}`;
@@ -1395,6 +1402,7 @@ function updateDialogHeader() {
 
   dialogTitle.textContent = getDisplayName(currentDialogUser);
   renameDialogBtn.classList.toggle('hidden', currentDialogUser.type === 'group');
+  addGroupMembersBtn?.classList.toggle('hidden', currentDialogUser.type !== 'group');
   if (currentDialogUser.type === 'group') {
     const count = Array.isArray(currentDialogUser.memberIds) ? currentDialogUser.memberIds.length : 0;
     dialogSubtitle.textContent = count > 0 ? `${count} участников` : 'Групповая беседа';
@@ -1549,14 +1557,21 @@ function setupSocket() {
 }
 
 
+async function fetchEligibleGroupUsers(groupId = '') {
+  const endpoint = groupId
+    ? `/api/groups/${encodeURIComponent(groupId)}/eligible-users?currentUserId=${encodeURIComponent(currentUser.id)}`
+    : `/api/groups/eligible-users?currentUserId=${encodeURIComponent(currentUser.id)}`;
+  const response = await fetch(apiUrl(endpoint));
+  const data = await parseApiResponse(response);
+  return data.users || [];
+}
+
 async function renderGroupMembers() {
   if (!groupMembersList) return;
   groupMembersList.innerHTML = '';
-  const response = await fetch(apiUrl(`/api/users/all?currentUserId=${encodeURIComponent(currentUser.id)}`));
-  const data = await response.json();
-  const candidates = (data.users || []).filter((user) => user.id !== currentUser.id);
+  const candidates = await fetchEligibleGroupUsers(groupModalState.mode === 'add' ? groupModalState.groupId : '');
   if (!candidates.length) {
-    groupMembersList.innerHTML = '<div class="blacklist-empty">Нет доступных пользователей для добавления.</div>';
+    groupMembersList.innerHTML = `<div class="blacklist-empty">${groupModalState.mode === 'add' ? 'Нет пользователей, которых можно добавить в эту беседу.' : 'Нет доступных пользователей. Создать беседу можно только с теми, с кем у вас уже есть диалог.'}</div>`;
     return;
   }
   candidates.forEach((user) => {
@@ -1576,7 +1591,24 @@ async function renderGroupMembers() {
 
 async function openGroupModal() {
   if (!groupModal) return;
+  groupModalState.mode = 'create';
+  groupModalState.groupId = '';
   groupNameInput.value = '';
+  if (groupModalTitle) groupModalTitle.textContent = 'Создать беседу';
+  if (saveGroupBtn) saveGroupBtn.textContent = 'Создать';
+  if (groupNameWrap) groupNameWrap.classList.remove('hidden');
+  groupModal.classList.remove('hidden');
+  await renderGroupMembers();
+}
+
+async function openAddMembersModal() {
+  if (!groupModal || !currentDialogUser || currentDialogUser.type !== 'group') return;
+  groupModalState.mode = 'add';
+  groupModalState.groupId = currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '');
+  groupNameInput.value = currentDialogUser.name || '';
+  if (groupModalTitle) groupModalTitle.textContent = 'Добавить участников';
+  if (saveGroupBtn) saveGroupBtn.textContent = 'Добавить';
+  if (groupNameWrap) groupNameWrap.classList.add('hidden');
   groupModal.classList.remove('hidden');
   await renderGroupMembers();
 }
@@ -1584,24 +1616,47 @@ async function openGroupModal() {
 function closeGroupModal() {
   if (!groupModal) return;
   groupModal.classList.add('hidden');
+  groupModalState.mode = 'create';
+  groupModalState.groupId = '';
+  if (groupNameWrap) groupNameWrap.classList.remove('hidden');
 }
 
 async function saveGroup() {
-  const name = groupNameInput?.value?.trim() || '';
   const memberIds = [...groupMembersList.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+  if (!memberIds.length) {
+    alert('Выберите хотя бы одного участника');
+    return;
+  }
   try {
+    if (groupModalState.mode === 'add') {
+      const response = await fetch(apiUrl(`/api/groups/${encodeURIComponent(groupModalState.groupId)}/members`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentUserId: currentUser.id, memberIds })
+      });
+      const data = await parseApiResponse(response);
+      closeGroupModal();
+      await loadUsers();
+      if (data.group?.id) {
+        const existing = users.find((item) => item.id === data.group.id);
+        if (existing) currentDialogUser = existing;
+        await selectDialog(data.group.id);
+      }
+      return;
+    }
+
+    const name = groupNameInput?.value?.trim() || '';
     const response = await fetch(apiUrl('/api/groups'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ currentUserId: currentUser.id, name, memberIds })
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Не удалось создать беседу');
+    const data = await parseApiResponse(response);
     closeGroupModal();
     await loadUsers();
     if (data.group?.id) await selectDialog(data.group.id);
   } catch (error) {
-    alert(error.message || 'Не удалось создать беседу');
+    alert(error.message || (groupModalState.mode === 'add' ? 'Не удалось добавить участников' : 'Не удалось создать беседу'));
   }
 }
 
@@ -2000,6 +2055,7 @@ if (sendVoiceRecordingBtn) {
   sendVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ send: true }));
 }
 if (createGroupBtn) createGroupBtn.addEventListener('click', openGroupModal);
+if (addGroupMembersBtn) addGroupMembersBtn.addEventListener('click', openAddMembersModal);
 if (cancelGroupBtn) cancelGroupBtn.addEventListener('click', closeGroupModal);
 if (saveGroupBtn) saveGroupBtn.addEventListener('click', saveGroup);
 bindVoiceRecordingSwipe();
