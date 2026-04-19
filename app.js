@@ -84,6 +84,7 @@ const profilePhotoInput = document.getElementById('profilePhotoInput');
 const profilePreviewAvatar = document.getElementById('profilePreviewAvatar');
 const avatarUploadText = document.getElementById('avatarUploadText');
 const contactBlockToggleBtn = document.getElementById('contactBlockToggleBtn');
+const contactDeleteDialogBtn = document.getElementById('contactDeleteDialogBtn');
 const contactRenameDialogBtn = document.getElementById('contactRenameDialogBtn');
 const chatStatusBanner = document.getElementById('chatStatusBanner');
 const settingsTabs = document.querySelectorAll('.settings-tab');
@@ -122,6 +123,74 @@ function apiUrl(path) {
 function createClientMessageId(prefix = 'msg') {
   if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getCurrentDialogKey() {
+  if (!currentDialogUser) return '';
+  if (currentDialogUser.type === 'group') return `group:${currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '')}`;
+  return `user:${currentDialogUser.id}`;
+}
+
+function hideRemoteTypingIndicator() {
+  currentTypingState.isRemoteTyping = false;
+  currentTypingState.typingUserId = '';
+  currentTypingState.typingName = '';
+  if (currentTypingState.timeoutId) {
+    clearTimeout(currentTypingState.timeoutId);
+    currentTypingState.timeoutId = null;
+  }
+  applyDialogRestrictions();
+}
+
+function showRemoteTypingIndicator({ userId = '', name = '' } = {}) {
+  currentTypingState.isRemoteTyping = true;
+  currentTypingState.typingUserId = String(userId || '');
+  currentTypingState.typingName = String(name || '').trim();
+  if (currentTypingState.timeoutId) clearTimeout(currentTypingState.timeoutId);
+  currentTypingState.timeoutId = setTimeout(() => hideRemoteTypingIndicator(), 2600);
+  applyDialogRestrictions();
+}
+
+function stopLocalTypingSignal(force = false) {
+  if (localTypingState.timeoutId) {
+    clearTimeout(localTypingState.timeoutId);
+    localTypingState.timeoutId = null;
+  }
+  if (!socket || !currentUser || !localTypingState.isTyping) {
+    localTypingState.isTyping = false;
+    return;
+  }
+  const dialogKey = localTypingState.lastDialogKey || getCurrentDialogKey();
+  if (!dialogKey && !force) return;
+  localTypingState.isTyping = false;
+  socket.emit('typing:stop', {
+    currentUserId: currentUser.id,
+    recipientId: currentDialogUser?.type === 'group' ? '' : currentDialogUser?.id,
+    groupId: currentDialogUser?.type === 'group' ? (currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '')) : '',
+    dialogKey
+  });
+}
+
+function queueLocalTypingSignal() {
+  if (!socket || !currentUser || !currentDialogUser || !currentDialogState.canMessage) return;
+  const hasText = Boolean(String(messageInput?.value || '').trim());
+  if (!hasText) {
+    stopLocalTypingSignal();
+    return;
+  }
+  const dialogKey = getCurrentDialogKey();
+  localTypingState.lastDialogKey = dialogKey;
+  if (!localTypingState.isTyping) {
+    socket.emit('typing:start', {
+      currentUserId: currentUser.id,
+      recipientId: currentDialogUser.type === 'group' ? '' : currentDialogUser.id,
+      groupId: currentDialogUser.type === 'group' ? (currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '')) : '',
+      dialogKey
+    });
+    localTypingState.isTyping = true;
+  }
+  if (localTypingState.timeoutId) clearTimeout(localTypingState.timeoutId);
+  localTypingState.timeoutId = setTimeout(() => stopLocalTypingSignal(), 1400);
 }
 
 
@@ -205,6 +274,17 @@ let pendingAttachments = [];
 let pendingAttachmentIndex = 0;
 let isUploadingAttachment = false;
 let currentDialogMessages = [];
+let currentTypingState = {
+  isRemoteTyping: false,
+  typingUserId: '',
+  typingName: '',
+  timeoutId: null
+};
+let localTypingState = {
+  isTyping: false,
+  timeoutId: null,
+  lastDialogKey: ''
+};
 let mediaViewerItems = [];
 let mediaViewerIndex = 0;
 let mediaRecorder = null;
@@ -465,6 +545,7 @@ async function openContactProfile() {
     contactSuggestAvatarBtn?.classList.add('hidden');
     contactRenameDialogBtn?.classList.add('hidden');
     contactBlockToggleBtn?.classList.add('hidden');
+    contactDeleteDialogBtn?.classList.add('hidden');
     if (contactProfileNameField) contactProfileNameField.textContent = currentDialogUser.name || '—';
     if (contactProfilePhone) contactProfilePhone.textContent = '—';
     if (contactProfileId) contactProfileId.textContent = currentDialogUser.rawId || String(currentDialogUser.id || '').replace(/^group:/, '') || '—';
@@ -505,6 +586,7 @@ async function openContactProfile() {
     contactSuggestAvatarBtn?.classList.remove('hidden');
     contactRenameDialogBtn?.classList.remove('hidden');
     contactBlockToggleBtn?.classList.remove('hidden');
+    contactDeleteDialogBtn?.classList.remove('hidden');
     contactBlockToggleBtn.textContent = currentDialogState.isBlocked ? 'Убрать из чёрного списка' : 'В чёрный список';
     if (contactProfileNameField) contactProfileNameField.textContent = profileUser.name || '—';
     if (contactProfilePhone) contactProfilePhone.textContent = profileUser.phone || 'Номер скрыт';
@@ -528,6 +610,7 @@ function closeContactProfile() {
   contactSuggestAvatarBtn?.classList.add('hidden');
   contactRenameDialogBtn?.classList.add('hidden');
   contactBlockToggleBtn?.classList.add('hidden');
+  contactDeleteDialogBtn?.classList.add('hidden');
 }
 
 function formatPreview(user) {
@@ -1675,6 +1758,8 @@ function applyDialogRestrictions() {
     bannerText = 'Вы заблокировали этого собеседника. Отправка сообщений отключена.';
   } else if (currentDialogState.blockedByUser) {
     bannerText = 'Собеседник скрыл общение. Отправка сообщений недоступна.';
+  } else if (currentTypingState.isRemoteTyping) {
+    bannerText = `${currentTypingState.typingName || 'Собеседник'} печатает…`;
   }
 
   chatStatusBanner.textContent = bannerText;
@@ -1860,6 +1945,8 @@ async function selectDialog(userId) {
   const selected = users.find((user) => user.id === userId);
   if (!selected) return;
 
+  stopLocalTypingSignal(true);
+  hideRemoteTypingIndicator();
   currentDialogUser = selected;
   currentDialogState = {
     canMessage: selected.canMessage !== false,
@@ -1904,6 +1991,8 @@ async function selectDialog(userId) {
 }
 
 function exitDialog() {
+  stopLocalTypingSignal(true);
+  hideRemoteTypingIndicator();
   currentDialogUser = null;
   currentDialogProfile = null;
   currentDialogState = {
@@ -1951,6 +2040,7 @@ function setupSocket() {
       ? message.groupId && message.groupId === (currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''))
       : message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':'));
     if (isCurrentDialog) {
+      if (currentTypingState.isRemoteTyping && String(currentTypingState.typingUserId || '') === String(message.senderId || '')) hideRemoteTypingIndicator();
       addMessage(message);
       if (currentDialogUser.type === 'group') socket.emit('open-dialog', { currentUserId: currentUser.id, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '') });
       else socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
@@ -1989,6 +2079,46 @@ function setupSocket() {
     if (editingMessageId === message.id) resetEditingState();
   });
 
+  socket.on('dialog:deleted', async ({ dialogId, groupId, byUserId } = {}) => {
+    if (currentDialogUser) {
+      const currentDialogId = currentDialogUser.type === 'group'
+        ? `group:${currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '')}`
+        : [currentUser.id, currentDialogUser.id].sort().join(':');
+      const targetDialogId = groupId ? `group:${groupId}` : String(dialogId || '');
+      if (targetDialogId && currentDialogId === targetDialogId) {
+        currentDialogMessages = [];
+        chat.innerHTML = '';
+        hideRemoteTypingIndicator();
+        if (String(byUserId || '') !== String(currentUser?.id || '')) {
+          alert('Диалог был удалён для всех участников.');
+        }
+        showDialogUI(false);
+        currentDialogUser = null;
+        currentDialogProfile = null;
+      }
+    }
+    await loadUsers();
+  });
+
+  socket.on('typing:start', ({ userId, groupId, dialogId, userName } = {}) => {
+    if (!currentDialogUser || String(userId || '') === String(currentUser?.id || '')) return;
+    const currentDialogId = currentDialogUser.type === 'group'
+      ? `group:${currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '')}`
+      : [currentUser.id, currentDialogUser.id].sort().join(':');
+    const targetDialogId = groupId ? `group:${groupId}` : String(dialogId || '');
+    if (targetDialogId && targetDialogId === currentDialogId) {
+      showRemoteTypingIndicator({ userId, name: userName || '' });
+    }
+  });
+
+  socket.on('typing:stop', ({ userId, groupId, dialogId } = {}) => {
+    if (!currentDialogUser || String(userId || '') === String(currentUser?.id || '')) return;
+    const currentDialogId = currentDialogUser.type === 'group'
+      ? `group:${currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '')}`
+      : [currentUser.id, currentDialogUser.id].sort().join(':');
+    const targetDialogId = groupId ? `group:${groupId}` : String(dialogId || '');
+    if (targetDialogId && targetDialogId === currentDialogId) hideRemoteTypingIndicator();
+  });
 
   socket.on('group:updated', async (group) => {
     if (!group) return;
@@ -2530,6 +2660,9 @@ passwordInput.addEventListener('keydown', (event) => {
 });
 searchInput.addEventListener('input', loadUsers);
 sendBtn.addEventListener('click', submitMessage);
+messageInput.addEventListener('input', () => {
+  queueLocalTypingSignal();
+});
 messageInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') submitMessage();
 });
@@ -2537,6 +2670,30 @@ currentUserAvatar.addEventListener('click', openProfileModal);
 if (dialogProfileTrigger) dialogProfileTrigger.addEventListener('click', openContactProfile);
 closeProfileBtn.addEventListener('click', closeProfileModal);
 if (closeContactProfileBtn) closeContactProfileBtn.addEventListener('click', closeContactProfile);
+if (contactDeleteDialogBtn) contactDeleteDialogBtn.addEventListener('click', async () => {
+  if (!currentDialogUser || currentDialogUser.type === 'group') return;
+  const confirmed = window.confirm(`Удалить диалог с ${getDisplayName(currentDialogUser) || 'собеседником'} для всех? Это действие нельзя отменить.`);
+  if (!confirmed) return;
+  try {
+    contactDeleteDialogBtn.disabled = true;
+    const response = await fetch(apiUrl(`/api/dialogs/${encodeURIComponent(currentDialogUser.id)}?currentUserId=${encodeURIComponent(currentUser.id)}`), { method: 'DELETE' });
+    let data = null;
+    try { data = await response.json(); } catch (_) { data = null; }
+    if (!response.ok) throw new Error(data?.error || 'Не удалось удалить диалог');
+    closeContactProfile();
+    currentDialogMessages = [];
+    chat.innerHTML = '';
+    hideRemoteTypingIndicator();
+    showDialogUI(false);
+    currentDialogUser = null;
+    currentDialogProfile = null;
+    await loadUsers();
+  } catch (error) {
+    alert(error.message || 'Не удалось удалить диалог');
+  } finally {
+    contactDeleteDialogBtn.disabled = false;
+  }
+});
 saveProfileBtn.addEventListener('click', saveProfile);
 logoutBtn.addEventListener('click', logout);
 backToDialogsBtn.addEventListener('click', exitDialog);

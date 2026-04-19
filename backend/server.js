@@ -752,6 +752,23 @@ async function broadcastMessageEvent(eventName, message) {
   io.to(`user:${message.senderId}`).to(`user:${message.recipientId}`).emit(eventName, message);
 }
 
+function emitTypingEvent(eventName, { senderId, recipientId = '', groupId = '', dialogId = '', userName = '' } = {}) {
+  const payload = {
+    userId: senderId ? String(senderId) : '',
+    recipientId: recipientId ? String(recipientId) : '',
+    groupId: groupId ? String(groupId) : '',
+    dialogId: dialogId ? String(dialogId) : '',
+    userName: String(userName || '')
+  };
+  if (payload.groupId) {
+    io.to(`group:${payload.groupId}`).emit(eventName, payload);
+    return;
+  }
+  if (payload.recipientId) {
+    io.to(`user:${payload.recipientId}`).emit(eventName, payload);
+  }
+}
+
 async function getBlockedIds(userId) {
   const result = await query('SELECT blocked_id FROM user_blocks WHERE blocker_id = $1', [String(userId)]);
   return result.rows.map((row) => String(row.blocked_id));
@@ -1328,6 +1345,28 @@ app.get('/api/users/:userId/profile', async (req, res) => {
   }
 });
 
+app.delete('/api/dialogs/:otherUserId', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const otherUserId = String(req.params.otherUserId || '');
+    if (!currentUserId || !otherUserId) return res.status(400).json({ error: 'Не выбран диалог' });
+    if (currentUserId === otherUserId) return res.status(400).json({ error: 'Нельзя удалить диалог с самим собой' });
+
+    const currentUser = await getUserById(currentUserId);
+    const otherUser = await getUserById(otherUserId);
+    if (!currentUser || !otherUser) return res.status(404).json({ error: 'Диалог не найден' });
+
+    const dialogId = makeDialogId(currentUserId, otherUserId);
+    await query('DELETE FROM messages WHERE dialog_id = $1 AND group_id IS NULL', [dialogId]);
+    invalidateDialogsBootstrapCache([currentUserId, otherUserId]);
+    io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('dialog:deleted', { dialogId, byUserId: currentUserId });
+    return res.json({ ok: true, dialogId });
+  } catch (error) {
+    console.error('dialog delete error', error);
+    return res.status(500).json({ error: 'Не удалось удалить диалог' });
+  }
+});
+
 app.get('/api/messages/:otherUserId', async (req, res) => {
   try {
     const currentUserId = String(req.query.currentUserId || '');
@@ -1560,12 +1599,7 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
-    if (groupId) {
-      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [groupId]);
-      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
-    } else {
-      invalidateDialogsBootstrapCache([String(sender.id), storedRecipientId]);
-    }
+    invalidateDialogsBootstrapCache([String(sender.id), String(recipient.id)]);
     res.json({ message });
   } catch (error) {
     console.error('message upload error', error);
@@ -1638,7 +1672,12 @@ app.post('/api/messages/avatar-suggestion', memoryUpload.single('photo'), async 
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
-    invalidateDialogsBootstrapCache([String(sender.id), String(recipient.id)]);
+    if (groupId) {
+      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [groupId]);
+      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
+    } else {
+      invalidateDialogsBootstrapCache([String(sender.id), storedRecipientId]);
+    }
     res.json({ message });
   } catch (error) {
     console.error('avatar suggestion send error', error);
@@ -1844,6 +1883,53 @@ io.on('connection', (socket) => {
       await broadcastMessageEvent('private-message', message);
     } catch (error) {
       console.error('send-group-message error', error);
+    }
+  });
+
+  socket.on('typing:start', async (payload = {}) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser?.id) return;
+      const sender = await getUserById(activeUser.id);
+      if (!sender) return;
+      const groupId = String(payload.groupId || '').trim();
+      const recipientId = String(payload.recipientId || '').trim();
+      if (groupId) {
+        const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, sender.id]);
+        if (!membership.rowCount) return;
+        emitTypingEvent('typing:start', { senderId: sender.id, groupId, dialogId: `group:${groupId}`, userName: sender.name });
+        return;
+      }
+      if (!recipientId) return;
+      const recipient = await getUserById(recipientId);
+      if (!recipient) return;
+      if (await areUsersBlocked(sender.id, recipient.id)) return;
+      emitTypingEvent('typing:start', { senderId: sender.id, recipientId: recipient.id, dialogId: makeDialogId(sender.id, recipient.id), userName: sender.name });
+    } catch (error) {
+      console.error('typing:start error', error);
+    }
+  });
+
+  socket.on('typing:stop', async (payload = {}) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser?.id) return;
+      const sender = await getUserById(activeUser.id);
+      if (!sender) return;
+      const groupId = String(payload.groupId || '').trim();
+      const recipientId = String(payload.recipientId || '').trim();
+      if (groupId) {
+        const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, sender.id]);
+        if (!membership.rowCount) return;
+        emitTypingEvent('typing:stop', { senderId: sender.id, groupId, dialogId: `group:${groupId}`, userName: sender.name });
+        return;
+      }
+      if (!recipientId) return;
+      const recipient = await getUserById(recipientId);
+      if (!recipient) return;
+      emitTypingEvent('typing:stop', { senderId: sender.id, recipientId: recipient.id, dialogId: makeDialogId(sender.id, recipient.id), userName: sender.name });
+    } catch (error) {
+      console.error('typing:stop error', error);
     }
   });
 
