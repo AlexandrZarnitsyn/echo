@@ -2072,12 +2072,15 @@ body[data-theme="dark"] .group-member-option {
 }
 
 .composer-row-recording {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
+  width: 100%;
 }
 
 .voice-recording-shell {
-  flex: 1;
+  width: 100%;
   min-width: 0;
   padding: 12px 16px;
   border-radius: 20px;
@@ -2133,6 +2136,7 @@ body[data-theme="dark"] .group-member-option {
 .voice-recording-wave-wrap {
   position: relative;
   overflow: hidden;
+  width: 100%;
   border-radius: 14px;
 }
 
@@ -2202,9 +2206,11 @@ body[data-theme="dark"] .group-member-option {
 }
 
 .voice-send-btn {
-  min-width: 118px;
+  min-width: 0;
   height: 44px;
+  padding: 0 18px;
   border-radius: 16px;
+  white-space: nowrap;
 }
 
 .voice-dot {
@@ -2235,7 +2241,28 @@ body[data-theme='dark'] #voiceRecordBtn {
   color: #cbd5e1;
 }
 
+
+body[data-theme='light'] #voiceRecordBtn {
+  color: #0f172a;
+}
+
+body[data-theme='light'] #voiceRecordBtn:hover {
+  color: #2563eb;
+}
+
 body[data-theme='dark'] #voiceRecordBtn:hover {
   color: #ffffff;
 }
 
+
+
+@media (max-width: 720px) {
+  .composer-row-recording {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .voice-send-btn {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
