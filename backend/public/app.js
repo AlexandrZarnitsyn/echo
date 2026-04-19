@@ -1488,10 +1488,28 @@ function clearReplyTarget() {
   renderReplyComposer();
 }
 
+function flashReplyTarget(messageId) {
+  const targetNode = chat.querySelector(`.message[data-id="${String(messageId)}"]`);
+  if (!targetNode) return;
+  targetNode.classList.add('reply-jump-highlight');
+  window.setTimeout(() => targetNode.classList.remove('reply-jump-highlight'), 1800);
+}
+
+function scrollToMessageById(messageId) {
+  const targetNode = chat.querySelector(`.message[data-id="${String(messageId)}"]`);
+  if (!targetNode) return false;
+  targetNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  flashReplyTarget(messageId);
+  return true;
+}
+
 function createReplyPreviewNode(message) {
   if (!message?.replyToMessageId) return null;
-  const wrap = document.createElement('div');
+  const wrap = document.createElement('button');
+  wrap.type = 'button';
   wrap.className = 'message-reply-preview';
+  wrap.setAttribute('aria-label', 'Перейти к сообщению, на которое ответили');
+  wrap.dataset.replyToId = String(message.replyToMessageId);
   const title = document.createElement('div');
   title.className = 'message-reply-preview-title';
   const senderName = message.replyPreviewSenderName || 'Сообщение';
@@ -1500,11 +1518,59 @@ function createReplyPreviewNode(message) {
   text.className = 'message-reply-preview-text';
   text.textContent = getReplySnippet(message);
   wrap.append(title, text);
+  wrap.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    scrollToMessageById(message.replyToMessageId);
+  });
   return wrap;
 }
 
+function attachReplySwipe(node, message) {
+  let startX = 0;
+  let startY = 0;
+  let deltaX = 0;
+  let swiping = false;
+  const maxShift = 82;
+  const reset = () => {
+    node.style.transform = '';
+    node.style.transition = '';
+  };
+  node.addEventListener('touchstart', (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    startX = touch.clientX;
+    startY = touch.clientY;
+    deltaX = 0;
+    swiping = false;
+    node.style.transition = '';
+  }, { passive: true });
+  node.addEventListener('touchmove', (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const dx = touch.clientX - startX;
+    const dy = touch.clientY - startY;
+    if (!swiping) {
+      if (Math.abs(dx) < 14 || Math.abs(dx) <= Math.abs(dy)) return;
+      if (dx >= 0) return;
+      swiping = true;
+    }
+    deltaX = Math.max(dx, -maxShift);
+    node.style.transform = `translateX(${deltaX}px)`;
+  }, { passive: true });
+  node.addEventListener('touchend', () => {
+    node.style.transition = 'transform .18s ease';
+    if (swiping && deltaX <= -52) setReplyTarget(message.id);
+    reset();
+  });
+  node.addEventListener('touchcancel', () => {
+    node.style.transition = 'transform .18s ease';
+    reset();
+  });
+}
+
 function isInteractiveMessageTarget(target) {
-  return Boolean(target.closest('button, a, input, textarea, video, audio, .dialog-media-clickable, .avatar-suggestion-card, .message-file-card'));
+  return Boolean(target.closest('button, a, input, textarea, video, audio, .dialog-media-clickable, .avatar-suggestion-card, .message-file-card, .message-reply-preview, .message-reply-trigger'));
 }
 
 function createVoiceMessageNode(message, attachmentUrl, isMe) {
@@ -1755,6 +1821,21 @@ function createMessageNode(message) {
   if (content.textContent || message.deletedAt) node.appendChild(content);
   if (mediaNode) node.appendChild(mediaNode);
 
+  if (!message.deletedAt) {
+    const replyTrigger = document.createElement('button');
+    replyTrigger.type = 'button';
+    replyTrigger.className = 'message-reply-trigger';
+    replyTrigger.setAttribute('aria-label', 'Ответить');
+    replyTrigger.innerHTML = '<span class="message-reply-trigger-icon">↩</span><span class="message-reply-trigger-text">Reply</span>';
+    replyTrigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setReplyTarget(message.id);
+    });
+    node.appendChild(replyTrigger);
+    attachReplySwipe(node, message);
+  }
+
   if (isMe && !message.deletedAt && !message.isGroup) {
     const actions = document.createElement('div');
     actions.className = 'message-actions';
@@ -1770,16 +1851,6 @@ function createMessageNode(message) {
   }
 
   node.appendChild(meta);
-
-  if (!message.deletedAt) {
-    node.classList.add('reply-selectable');
-    node.title = 'Нажмите, чтобы ответить';
-    node.addEventListener('click', (event) => {
-      if (isInteractiveMessageTarget(event.target)) return;
-      setReplyTarget(message.id);
-    });
-  }
-
   return node;
 }
 
