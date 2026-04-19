@@ -576,6 +576,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 20px;
+  z-index: 1000;
 }
 
 .modal-card {
@@ -1536,6 +1537,8 @@ body[data-theme='dark'] .attachment-remove-btn:hover {
 }
 
 .attachment-modal-card {
+  position: relative;
+  z-index: 1001;
   width: min(420px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   overflow: auto;
