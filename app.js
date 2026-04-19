@@ -722,6 +722,119 @@ function getStatusDots(message) {
   return '';
 }
 
+
+function formatAudioTime(totalSeconds) {
+  const safe = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0;
+  const minutes = Math.floor(safe / 60);
+  const seconds = String(safe % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
+}
+
+function buildWaveBars(seedValue, count = 42) {
+  const bars = [];
+  let seed = 0;
+  const raw = String(seedValue || Date.now());
+  for (let i = 0; i < raw.length; i += 1) seed = (seed * 31 + raw.charCodeAt(i)) % 2147483647;
+  for (let i = 0; i < count; i += 1) {
+    seed = (seed * 48271) % 2147483647;
+    const height = 20 + (seed % 70);
+    bars.push(`<span class="voice-wave-bar" style="height:${height}%"></span>`);
+  }
+  return bars.join('');
+}
+
+function createVoiceMessageNode(message, attachmentUrl, isMe) {
+  const wrap = document.createElement('div');
+  wrap.className = `voice-message ${isMe ? 'me' : 'other'}`;
+
+  const audio = document.createElement('audio');
+  audio.className = 'voice-audio-native';
+  audio.src = attachmentUrl;
+  audio.preload = 'metadata';
+
+  const playBtn = document.createElement('button');
+  playBtn.className = 'voice-play-btn';
+  playBtn.type = 'button';
+  playBtn.setAttribute('aria-label', 'Воспроизвести голосовое сообщение');
+  playBtn.innerHTML = '<span class="voice-play-icon"></span>';
+
+  const body = document.createElement('div');
+  body.className = 'voice-body';
+
+  const wave = document.createElement('div');
+  wave.className = 'voice-wave';
+  wave.innerHTML = buildWaveBars(message.id || message.createdAt || attachmentUrl);
+
+  const info = document.createElement('div');
+  info.className = 'voice-info';
+
+  const duration = document.createElement('span');
+  duration.className = 'voice-duration';
+  duration.textContent = '0:00';
+
+  const dot = document.createElement('span');
+  dot.className = 'voice-dot';
+
+  info.append(duration, dot);
+  body.append(wave, info);
+  wrap.append(playBtn, body, audio);
+
+  let rafId = null;
+  function refreshBars() {
+    const bars = wave.querySelectorAll('.voice-wave-bar');
+    const progress = audio.duration ? (audio.currentTime / audio.duration) : 0;
+    const activeCount = Math.round(bars.length * progress);
+    bars.forEach((bar, index) => bar.classList.toggle('is-active', index < activeCount));
+    duration.textContent = formatAudioTime(audio.currentTime || audio.duration || 0);
+    if (!audio.paused && !audio.ended) rafId = requestAnimationFrame(refreshBars);
+  }
+
+  function syncState() {
+    wrap.classList.toggle('is-playing', !audio.paused && !audio.ended);
+    if (audio.paused || audio.ended) {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+    } else if (!rafId) {
+      refreshBars();
+    }
+    if (audio.ended) {
+      duration.textContent = formatAudioTime(audio.duration || 0);
+    }
+  }
+
+  audio.addEventListener('loadedmetadata', () => {
+    duration.textContent = formatAudioTime(audio.duration || 0);
+  });
+  audio.addEventListener('play', syncState);
+  audio.addEventListener('pause', syncState);
+  audio.addEventListener('ended', () => {
+    audio.currentTime = 0;
+    syncState();
+    refreshBars();
+    duration.textContent = formatAudioTime(audio.duration || 0);
+  });
+  audio.addEventListener('timeupdate', () => {
+    if (audio.paused) refreshBars();
+  });
+
+  playBtn.addEventListener('click', async () => {
+    try {
+      const playingAudios = document.querySelectorAll('.voice-audio-native');
+      playingAudios.forEach((node) => {
+        if (node !== audio) node.pause();
+      });
+      if (audio.paused) await audio.play();
+      else audio.pause();
+      syncState();
+    } catch (error) {
+      console.error('Voice playback error', error);
+    }
+  });
+
+  refreshBars();
+  return wrap;
+}
+
 function createMessageNode(message) {
   const node = document.createElement('div');
   const isMe = currentUser && message.senderId === currentUser.id;
@@ -759,11 +872,7 @@ function createMessageNode(message) {
         }
       });
     } else if (message.attachmentType === 'audio') {
-      mediaNode = document.createElement('audio');
-      mediaNode.className = 'dialog-audio';
-      mediaNode.src = attachmentUrl;
-      mediaNode.controls = true;
-      mediaNode.preload = 'metadata';
+      mediaNode = createVoiceMessageNode(message, attachmentUrl, isMe);
     } else {
       mediaNode = document.createElement('a');
       mediaNode.className = 'message-attachment-link';
@@ -1159,7 +1268,11 @@ async function toggleVoiceRecording() {
       const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
       setPendingAttachment(file);
       isRecordingVoice = false;
-      if (voiceRecordBtn) voiceRecordBtn.textContent = '🎤';
+      if (voiceRecordBtn) {
+        voiceRecordBtn.classList.remove('is-recording');
+        voiceRecordBtn.setAttribute('aria-label', 'Записать голосовое сообщение');
+        voiceRecordBtn.setAttribute('title', 'Записать голосовое сообщение');
+      }
       mediaRecorderStream?.getTracks?.().forEach((track) => track.stop());
       mediaRecorderStream = null;
     };
