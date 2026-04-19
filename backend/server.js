@@ -1,5 +1,6 @@
 const express = require('express');
 const http = require('http');
+const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const multer = require('multer');
@@ -110,6 +111,214 @@ function publicUser(user, viewerId = null, blockedUserIds = []) {
 
 async function query(sql, params = []) {
   return pool.query(sql, params);
+}
+
+
+const dialogsBootstrapCache = new Map();
+const DIALOGS_BOOTSTRAP_TTL_MS = Number(process.env.DIALOGS_BOOTSTRAP_TTL_MS || 15000);
+
+function getDialogsBootstrapCacheKey(userId, search = '') {
+  return `${String(userId)}::${String(search || '').trim().toLowerCase()}`;
+}
+
+function invalidateDialogsBootstrapCache(userIds = []) {
+  const prefixes = new Set((Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean).map((id) => `${String(id)}::`));
+  if (!prefixes.size) {
+    dialogsBootstrapCache.clear();
+    return;
+  }
+  for (const key of [...dialogsBootstrapCache.keys()]) {
+    for (const prefix of prefixes) {
+      if (key.startsWith(prefix)) {
+        dialogsBootstrapCache.delete(key);
+        break;
+      }
+    }
+  }
+}
+
+function setDialogsBootstrapCache(userId, search, payload) {
+  dialogsBootstrapCache.set(getDialogsBootstrapCacheKey(userId, search), {
+    expiresAt: Date.now() + DIALOGS_BOOTSTRAP_TTL_MS,
+    payload
+  });
+}
+
+function getDialogsBootstrapCache(userId, search) {
+  const key = getDialogsBootstrapCacheKey(userId, search);
+  const cached = dialogsBootstrapCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    dialogsBootstrapCache.delete(key);
+    return null;
+  }
+  return cached.payload;
+}
+
+async function fetchPresencePayload() {
+  const result = await query('SELECT id, last_seen_at FROM users');
+  return {
+    onlineUserIds: [...onlineUsers.keys()],
+    lastSeenMap: Object.fromEntries(result.rows.map((row) => [String(row.id), row.last_seen_at || null]))
+  };
+}
+
+async function fetchUsersList(currentUserId, search = '') {
+  const currentUser = await getUserById(currentUserId);
+  if (!currentUser) return [];
+  const normalizedSearch = normalizePhone(search || '');
+  const result = await query(
+    `WITH viewer_blocks AS (
+        SELECT blocked_id FROM user_blocks WHERE blocker_id = $1
+      ),
+      blocked_me AS (
+        SELECT blocker_id FROM user_blocks WHERE blocked_id = $1
+      ),
+      last_messages AS (
+        SELECT DISTINCT ON (m.dialog_id)
+          m.dialog_id,
+          m.text,
+          m.created_at,
+          m.sender_id,
+          m.deleted_at,
+          m.attachment_type,
+          m.attachment_name
+        FROM messages m
+        ORDER BY m.dialog_id, m.created_at DESC
+      ),
+      unread_counts AS (
+        SELECT sender_id, COUNT(*)::int AS unread_count
+        FROM messages
+        WHERE recipient_id = $1 AND read_at IS NULL AND deleted_at IS NULL
+        GROUP BY sender_id
+      )
+      SELECT
+       u.*,
+       lm.text AS last_message_text,
+       lm.created_at AS last_message_created_at,
+       lm.sender_id AS last_message_sender_id,
+       lm.deleted_at AS last_message_deleted_at,
+       lm.attachment_type AS last_message_attachment_type,
+       lm.attachment_name AS last_message_attachment_name,
+       COALESCE(uc.unread_count, 0) AS unread_count,
+       (vb.blocked_id IS NOT NULL) AS is_blocked,
+       (bm.blocker_id IS NOT NULL) AS blocked_by_user,
+       (lm.dialog_id IS NOT NULL) AS has_dialog
+     FROM users u
+     LEFT JOIN viewer_blocks vb ON vb.blocked_id = u.id
+     LEFT JOIN blocked_me bm ON bm.blocker_id = u.id
+     LEFT JOIN last_messages lm ON lm.dialog_id = CASE WHEN u.id < $1 THEN u.id || ':' || $1 ELSE $1 || ':' || u.id END
+     LEFT JOIN unread_counts uc ON uc.sender_id = u.id
+     WHERE u.id <> $1
+     ORDER BY COALESCE(lm.created_at, TO_TIMESTAMP(0)) DESC, u.name ASC`,
+    [currentUserId]
+  );
+
+  return result.rows
+    .map((row) => {
+      const user = mapUserRow(row);
+      return {
+        ...publicUser(user, currentUserId),
+        hasDialog: row.has_dialog,
+        lastMessage: row.last_message_created_at ? {
+          text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
+          createdAt: row.last_message_created_at,
+          senderId: String(row.last_message_sender_id),
+          deletedAt: row.last_message_deleted_at || null,
+          attachmentType: row.last_message_attachment_type || '',
+          attachmentName: row.last_message_attachment_name || ''
+        } : null,
+        unreadCount: Number(row.unread_count || 0),
+        isBlocked: row.is_blocked,
+        blockedByUser: row.blocked_by_user,
+        canMessage: !row.is_blocked && !row.blocked_by_user
+      };
+    })
+    .filter((user) => {
+      if (normalizedSearch) return user.phone && normalizePhone(user.phone).includes(normalizedSearch);
+      return user.hasDialog || user.isBlocked;
+    });
+}
+
+async function fetchGroupsList(currentUserId) {
+  const currentUser = await getUserById(currentUserId);
+  if (!currentUser) return [];
+  const result = await query(
+    `WITH memberships AS (
+        SELECT gm.group_id
+        FROM group_members gm
+        WHERE gm.user_id = $1
+      ),
+      last_messages AS (
+        SELECT DISTINCT ON (m.group_id)
+          m.group_id,
+          m.text,
+          m.created_at,
+          m.sender_id,
+          m.deleted_at,
+          m.attachment_type,
+          m.attachment_name
+        FROM messages m
+        INNER JOIN memberships ms ON ms.group_id = m.group_id
+        WHERE m.group_id IS NOT NULL
+        ORDER BY m.group_id, m.created_at DESC
+      ),
+      unread_counts AS (
+        SELECT m.group_id, COUNT(*)::int AS unread_count
+        FROM messages m
+        INNER JOIN memberships ms ON ms.group_id = m.group_id
+        LEFT JOIN group_read_state grs ON grs.group_id = m.group_id AND grs.user_id = $1
+        WHERE m.group_id IS NOT NULL
+          AND m.sender_id <> $1
+          AND m.deleted_at IS NULL
+          AND m.created_at > COALESCE(grs.last_read_at, TO_TIMESTAMP(0))
+        GROUP BY m.group_id
+      ),
+      members_agg AS (
+        SELECT gm.group_id, ARRAY_AGG(gm.user_id ORDER BY gm.created_at ASC) AS member_ids
+        FROM group_members gm
+        INNER JOIN memberships ms ON ms.group_id = gm.group_id
+        GROUP BY gm.group_id
+      )
+     SELECT g.*, lm.text AS last_message_text, lm.created_at AS last_message_created_at,
+            lm.sender_id AS last_message_sender_id, lm.deleted_at AS last_message_deleted_at,
+            lm.attachment_type AS last_message_attachment_type, lm.attachment_name AS last_message_attachment_name,
+            COALESCE(uc.unread_count, 0) AS unread_count, ma.member_ids
+     FROM groups g
+     INNER JOIN memberships ms ON ms.group_id = g.id
+     LEFT JOIN last_messages lm ON lm.group_id = g.id
+     LEFT JOIN unread_counts uc ON uc.group_id = g.id
+     LEFT JOIN members_agg ma ON ma.group_id = g.id
+     ORDER BY COALESCE(lm.created_at, g.created_at) DESC, g.name ASC`,
+    [currentUserId]
+  );
+
+  return result.rows.map((row) => ({
+    id: `group:${row.id}`,
+    rawId: row.id,
+    type: 'group',
+    name: row.name,
+    photo: row.photo || '',
+    memberIds: row.member_ids || [],
+    unreadCount: Number(row.unread_count || 0),
+    lastMessage: row.last_message_created_at ? {
+      text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
+      createdAt: row.last_message_created_at,
+      senderId: String(row.last_message_sender_id),
+      deletedAt: row.last_message_deleted_at || null,
+      attachmentType: row.last_message_attachment_type || '',
+      attachmentName: row.last_message_attachment_name || ''
+    } : null
+  }));
+}
+
+async function buildDialogsBootstrapPayload(currentUserId, search = '') {
+  const [users, groups, presence] = await Promise.all([
+    fetchUsersList(currentUserId, search),
+    fetchGroupsList(currentUserId),
+    fetchPresencePayload()
+  ]);
+  return { users, groups, ...presence, generatedAt: new Date().toISOString() };
 }
 
 async function initDatabase() {
@@ -458,6 +667,7 @@ app.post('/api/login', async (req, res) => {
     }
 
     const blockedUserIds = await getBlockedIds(user.id);
+    invalidateDialogsBootstrapCache([user.id]);
     res.json({ user: publicUser(user, user.id, blockedUserIds) });
   } catch (error) {
     console.error('login error', error);
@@ -485,6 +695,7 @@ app.put('/api/profile', async (req, res) => {
     const user = await getUserById(userId);
     const blockedUserIds = await getBlockedIds(user.id);
     io.emit('user:updated', publicUser(user));
+    invalidateDialogsBootstrapCache([user.id]);
     res.json({ user: publicUser(user, user.id, blockedUserIds) });
   } catch (error) {
     console.error('profile update error', error);
@@ -522,6 +733,7 @@ app.post('/api/profile/photo', memoryUpload.single('photo'), async (req, res) =>
     const user = await getUserById(userId);
     const blockedUserIds = await getBlockedIds(user.id);
     io.emit('user:updated', publicUser(user));
+    invalidateDialogsBootstrapCache([user.id]);
     res.json({ user: publicUser(user, user.id, blockedUserIds) });
   } catch (error) {
     console.error('photo upload error', error);
@@ -577,6 +789,7 @@ app.post('/api/block/:otherUserId', async (req, res) => {
     const blockedUserIds = await getBlockedIds(currentUserId);
     io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(currentUser, currentUserId, blockedUserIds));
     io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(otherUser));
+    invalidateDialogsBootstrapCache([currentUserId, otherUserId]);
     res.json({ user: publicUser(currentUser, currentUserId, blockedUserIds) });
   } catch (error) {
     console.error('block error', error);
@@ -599,6 +812,7 @@ app.delete('/api/block/:otherUserId', async (req, res) => {
     const blockedUserIds = await getBlockedIds(currentUserId);
     io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(currentUser, currentUserId, blockedUserIds));
     io.to(`user:${currentUserId}`).to(`user:${otherUserId}`).emit('user:updated', publicUser(otherUser));
+    invalidateDialogsBootstrapCache([currentUserId, otherUserId]);
     res.json({ user: publicUser(currentUser, currentUserId, blockedUserIds) });
   } catch (error) {
     console.error('unblock error', error);
@@ -609,86 +823,9 @@ app.delete('/api/block/:otherUserId', async (req, res) => {
 app.get('/api/users', async (req, res) => {
   try {
     const currentUserId = String(req.query.currentUserId || '');
-    const search = normalizePhone(req.query.search || '');
-    const currentUser = await getUserById(currentUserId);
-
-    if (!currentUser) {
-      return res.json({ users: [] });
-    }
-
-    const result = await query(
-      `WITH viewer_blocks AS (
-          SELECT blocked_id FROM user_blocks WHERE blocker_id = $1
-        ),
-        blocked_me AS (
-          SELECT blocker_id FROM user_blocks WHERE blocked_id = $1
-        ),
-        last_messages AS (
-          SELECT DISTINCT ON (m.dialog_id)
-            m.dialog_id,
-            m.text,
-            m.created_at,
-            m.sender_id,
-            m.deleted_at,
-            m.attachment_type,
-            m.attachment_name
-          FROM messages m
-          ORDER BY m.dialog_id, m.created_at DESC
-        ),
-        unread_counts AS (
-          SELECT sender_id, COUNT(*)::int AS unread_count
-          FROM messages
-          WHERE recipient_id = $1 AND read_at IS NULL AND deleted_at IS NULL
-          GROUP BY sender_id
-        )
-       SELECT
-         u.*,
-         lm.text AS last_message_text,
-         lm.created_at AS last_message_created_at,
-         lm.sender_id AS last_message_sender_id,
-         lm.deleted_at AS last_message_deleted_at,
-         lm.attachment_type AS last_message_attachment_type,
-         lm.attachment_name AS last_message_attachment_name,
-         COALESCE(uc.unread_count, 0) AS unread_count,
-         (vb.blocked_id IS NOT NULL) AS is_blocked,
-         (bm.blocker_id IS NOT NULL) AS blocked_by_user,
-         (lm.dialog_id IS NOT NULL) AS has_dialog
-       FROM users u
-       LEFT JOIN viewer_blocks vb ON vb.blocked_id = u.id
-       LEFT JOIN blocked_me bm ON bm.blocker_id = u.id
-       LEFT JOIN last_messages lm ON lm.dialog_id = CASE WHEN u.id < $1 THEN u.id || ':' || $1 ELSE $1 || ':' || u.id END
-       LEFT JOIN unread_counts uc ON uc.sender_id = u.id
-       WHERE u.id <> $1
-       ORDER BY COALESCE(lm.created_at, TO_TIMESTAMP(0)) DESC, u.name ASC`,
-      [currentUserId]
-    );
-
-    const filtered = result.rows
-      .map((row) => {
-        const user = mapUserRow(row);
-        return {
-          ...publicUser(user, currentUserId),
-          hasDialog: row.has_dialog,
-          lastMessage: row.last_message_created_at ? {
-            text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
-            createdAt: row.last_message_created_at,
-            senderId: String(row.last_message_sender_id),
-            deletedAt: row.last_message_deleted_at || null,
-            attachmentType: row.last_message_attachment_type || '',
-            attachmentName: row.last_message_attachment_name || ''
-          } : null,
-          unreadCount: Number(row.unread_count || 0),
-          isBlocked: row.is_blocked,
-          blockedByUser: row.blocked_by_user,
-          canMessage: !row.is_blocked && !row.blocked_by_user
-        };
-      })
-      .filter((user) => {
-        if (search) return user.phone && normalizePhone(user.phone).includes(search);
-        return user.hasDialog || user.isBlocked;
-      });
-
-    res.json({ users: filtered });
+    const search = String(req.query.search || '');
+    const users = await fetchUsersList(currentUserId, search);
+    res.json({ users });
   } catch (error) {
     console.error('users error', error);
     res.status(500).json({ error: 'Не удалось получить список пользователей' });
@@ -698,109 +835,11 @@ app.get('/api/users', async (req, res) => {
 app.get('/api/groups', async (req, res) => {
   try {
     const currentUserId = String(req.query.currentUserId || '');
-    const currentUser = await getUserById(currentUserId);
-    if (!currentUser) return res.json({ groups: [] });
-
-    const result = await query(
-      `WITH memberships AS (
-          SELECT gm.group_id
-          FROM group_members gm
-          WHERE gm.user_id = $1
-        ),
-        last_messages AS (
-          SELECT DISTINCT ON (m.group_id)
-            m.group_id,
-            m.text,
-            m.created_at,
-            m.sender_id,
-            m.deleted_at,
-            m.attachment_type,
-            m.attachment_name
-          FROM messages m
-          INNER JOIN memberships ms ON ms.group_id = m.group_id
-          WHERE m.group_id IS NOT NULL
-          ORDER BY m.group_id, m.created_at DESC
-        ),
-        unread_counts AS (
-          SELECT m.group_id, COUNT(*)::int AS unread_count
-          FROM messages m
-          INNER JOIN memberships ms ON ms.group_id = m.group_id
-          LEFT JOIN group_read_state grs ON grs.group_id = m.group_id AND grs.user_id = $1
-          WHERE m.group_id IS NOT NULL
-            AND m.sender_id <> $1
-            AND m.deleted_at IS NULL
-            AND m.created_at > COALESCE(grs.last_read_at, TO_TIMESTAMP(0))
-          GROUP BY m.group_id
-        ),
-        members_agg AS (
-          SELECT gm.group_id, ARRAY_AGG(gm.user_id ORDER BY gm.created_at ASC) AS member_ids
-          FROM group_members gm
-          INNER JOIN memberships ms ON ms.group_id = gm.group_id
-          GROUP BY gm.group_id
-        )
-       SELECT g.*, lm.text AS last_message_text, lm.created_at AS last_message_created_at,
-              lm.sender_id AS last_message_sender_id, lm.deleted_at AS last_message_deleted_at,
-              lm.attachment_type AS last_message_attachment_type, lm.attachment_name AS last_message_attachment_name,
-              COALESCE(uc.unread_count, 0) AS unread_count, ma.member_ids
-       FROM groups g
-       INNER JOIN memberships ms ON ms.group_id = g.id
-       LEFT JOIN last_messages lm ON lm.group_id = g.id
-       LEFT JOIN unread_counts uc ON uc.group_id = g.id
-       LEFT JOIN members_agg ma ON ma.group_id = g.id
-       ORDER BY COALESCE(lm.created_at, g.created_at) DESC, g.name ASC`,
-      [currentUserId]
-    );
-
-    res.json({ groups: result.rows.map((row) => ({
-      id: `group:${row.id}`,
-      rawId: row.id,
-      type: 'group',
-      name: row.name,
-      photo: row.photo || '',
-      memberIds: row.member_ids || [],
-      hasDialog: true,
-      canMessage: true,
-      unreadCount: Number(row.unread_count || 0),
-      lastMessage: row.last_message_created_at ? {
-        text: row.last_message_deleted_at ? 'Сообщение удалено' : row.last_message_text,
-        createdAt: row.last_message_created_at,
-        senderId: String(row.last_message_sender_id),
-        deletedAt: row.last_message_deleted_at || null,
-        attachmentType: row.last_message_attachment_type || '',
-        attachmentName: row.last_message_attachment_name || ''
-      } : null
-    })) });
+    const groups = await fetchGroupsList(currentUserId);
+    res.json({ groups });
   } catch (error) {
     console.error('groups error', error);
-    res.status(500).json({ error: 'Не удалось получить список бесед' });
-  }
-});
-
-
-app.get('/api/groups/eligible-users', async (req, res) => {
-  try {
-    const currentUserId = String(req.query.currentUserId || '');
-    const currentUser = await getUserById(currentUserId);
-    if (!currentUser) return res.json({ users: [] });
-    const users = await getEligibleDialogUsers(currentUserId);
-    res.json({ users });
-  } catch (error) {
-    console.error('group eligible users error', error);
-    res.status(500).json({ error: 'Не удалось получить доступных участников' });
-  }
-});
-
-app.get('/api/groups/:groupId/eligible-users', async (req, res) => {
-  try {
-    const currentUserId = String(req.query.currentUserId || '');
-    const groupId = String(req.params.groupId || '');
-    const membership = await query('SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1', [groupId, currentUserId]);
-    if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
-    const users = await getEligibleDialogUsers(currentUserId, { excludeGroupId: groupId });
-    res.json({ users });
-  } catch (error) {
-    console.error('group add eligible users error', error);
-    res.status(500).json({ error: 'Не удалось получить пользователей для добавления' });
+    res.status(500).json({ error: 'Не удалось получить беседы' });
   }
 });
 
@@ -1183,6 +1222,12 @@ app.put('/api/messages/:messageId', async (req, res) => {
 
     const payload = await getFullMessageById(messageId);
     await broadcastMessageEvent('message:updated', payload);
+    if (payload?.isGroup && payload.groupId) {
+      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [payload.groupId]);
+      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
+    } else {
+      invalidateDialogsBootstrapCache([payload?.senderId, payload?.recipientId]);
+    }
     res.json({ message: payload });
   } catch (error) {
     console.error('message edit error', error);
@@ -1213,6 +1258,12 @@ app.delete('/api/messages/:messageId', async (req, res) => {
 
     const payload = await getFullMessageById(messageId);
     await broadcastMessageEvent('message:deleted', payload);
+    if (payload?.isGroup && payload.groupId) {
+      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [payload.groupId]);
+      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
+    } else {
+      invalidateDialogsBootstrapCache([payload?.senderId, payload?.recipientId]);
+    }
     res.json({ message: payload });
   } catch (error) {
     console.error('message delete error', error);
@@ -1308,6 +1359,7 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
+    invalidateDialogsBootstrapCache([String(sender.id), String(recipient.id)]);
     res.json({ message });
   } catch (error) {
     console.error('message upload error', error);
@@ -1380,6 +1432,12 @@ app.post('/api/messages/avatar-suggestion', memoryUpload.single('photo'), async 
 
     const message = await getFullMessageById(messageId);
     await broadcastMessageEvent('private-message', message);
+    if (groupId) {
+      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [groupId]);
+      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
+    } else {
+      invalidateDialogsBootstrapCache([String(sender.id), storedRecipientId]);
+    }
     res.json({ message });
   } catch (error) {
     console.error('avatar suggestion send error', error);
@@ -1427,6 +1485,12 @@ app.post('/api/messages/:messageId/avatar-suggestion-response', async (req, res)
 
     const payload = await getFullMessageById(messageId);
     await broadcastMessageEvent('message:updated', payload);
+    if (payload?.isGroup && payload.groupId) {
+      const membersResult = await query('SELECT user_id FROM group_members WHERE group_id = $1', [payload.groupId]);
+      invalidateDialogsBootstrapCache(membersResult.rows.map((row) => String(row.user_id)));
+    } else {
+      invalidateDialogsBootstrapCache([payload?.senderId, payload?.recipientId]);
+    }
     res.json({ message: payload });
   } catch (error) {
     console.error('avatar suggestion response error', error);
@@ -1598,10 +1662,28 @@ io.on('connection', (socket) => {
   });
 });
 
+app.get('/api/dialogs/bootstrap', async (req, res) => {
+  try {
+    const currentUserId = String(req.query.currentUserId || '');
+    const search = String(req.query.search || '');
+    const currentUser = await getUserById(currentUserId);
+    if (!currentUser) return res.json({ users: [], groups: [], onlineUserIds: [], lastSeenMap: {}, generatedAt: new Date().toISOString() });
+
+    const cached = getDialogsBootstrapCache(currentUserId, search);
+    if (cached) return res.json({ ...cached, cacheSource: 'memory' });
+
+    const payload = await buildDialogsBootstrapPayload(currentUserId, search);
+    setDialogsBootstrapCache(currentUserId, search, payload);
+    res.json({ ...payload, cacheSource: 'database' });
+  } catch (error) {
+    console.error('dialogs bootstrap error', error);
+    res.status(500).json({ error: 'Не удалось быстро загрузить диалоги' });
+  }
+});
+
 app.get('/api/presence', async (_req, res) => {
-  const result = await query('SELECT id, last_seen_at FROM users');
-  const lastSeenMap = Object.fromEntries(result.rows.map((row) => [String(row.id), row.last_seen_at || null]));
-  res.json({ onlineUserIds: [...onlineUsers.keys()], lastSeenMap });
+  const presence = await fetchPresencePayload();
+  res.json(presence);
 });
 
 app.use((error, req, res, next) => {
