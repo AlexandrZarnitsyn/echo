@@ -2487,3 +2487,8 @@ body[data-theme="light"] .clickable-profile-trigger:hover {
 body[data-theme="light"] .contact-profile-avatar {
   border-color: rgba(17,24,39,0.1);
 }
+
+
+.clickable-profile-trigger.is-loading {
+  opacity: 0.7;
+}

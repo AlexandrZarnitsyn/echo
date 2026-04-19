@@ -343,6 +343,104 @@ function formatPhoneForDisplay(phone = '') {
   return phone || 'Номер скрыт';
 }
 
+function formatContactProfileDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function updateDialogProfileTriggerState() {
+  if (!dialogProfileTrigger) return;
+  const canOpen = Boolean(currentDialogUser);
+  dialogProfileTrigger.classList.toggle('is-disabled', !canOpen);
+  dialogProfileTrigger.title = canOpen
+    ? (currentDialogUser?.type === 'group' ? 'Открыть информацию о беседе' : 'Открыть профиль собеседника')
+    : 'Сначала выберите диалог';
+}
+
+async function openContactProfile() {
+  if (!currentDialogUser || !contactProfileModal) return;
+
+  if (currentDialogUser.type === 'group') {
+    currentDialogProfile = {
+      ...currentDialogUser,
+      createdAt: currentDialogUser.createdAt || null,
+      phone: '',
+      showPhone: false
+    };
+
+    if (contactProfileAvatar) {
+      contactProfileAvatar.src = getAvatar(currentDialogUser) || DEFAULT_AVATAR;
+      contactProfileAvatar.onerror = () => {
+        contactProfileAvatar.onerror = null;
+        contactProfileAvatar.src = DEFAULT_AVATAR;
+      };
+    }
+    if (contactProfileName) contactProfileName.textContent = currentDialogUser.name || 'Беседа';
+    if (contactProfileStatus) {
+      const count = Array.isArray(currentDialogUser.memberIds) ? currentDialogUser.memberIds.length : 0;
+      contactProfileStatus.textContent = count ? `Участников: ${count}` : 'Групповая беседа';
+    }
+    if (contactProfileNameField) contactProfileNameField.textContent = currentDialogUser.name || '—';
+    if (contactProfilePhone) contactProfilePhone.textContent = '—';
+    if (contactProfileId) contactProfileId.textContent = currentDialogUser.rawId || String(currentDialogUser.id || '').replace(/^group:/, '') || '—';
+    if (contactProfileDialogType) contactProfileDialogType.textContent = 'Групповая беседа';
+    if (contactProfileCreatedAt) contactProfileCreatedAt.textContent = formatContactProfileDate(currentDialogUser.createdAt);
+    contactProfileModal.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    dialogProfileTrigger?.classList.add('is-loading');
+    const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(currentDialogUser.id)}/profile?currentUserId=${encodeURIComponent(currentUser.id)}`));
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_) {
+      data = null;
+    }
+    if (!response.ok) {
+      throw new Error(data?.error || 'Не удалось открыть профиль');
+    }
+
+    const profileUser = data?.user || currentDialogUser;
+    currentDialogProfile = profileUser;
+
+    if (contactProfileAvatar) {
+      contactProfileAvatar.src = getAvatar(profileUser) || DEFAULT_AVATAR;
+      contactProfileAvatar.onerror = () => {
+        contactProfileAvatar.onerror = null;
+        contactProfileAvatar.src = DEFAULT_AVATAR;
+      };
+    }
+    if (contactProfileName) contactProfileName.textContent = getDisplayName(profileUser) || profileUser.name || 'Пользователь';
+    if (contactProfileStatus) contactProfileStatus.textContent = onlineUserIds.has(profileUser.id) ? 'Онлайн' : 'Не в сети';
+    if (contactProfileNameField) contactProfileNameField.textContent = profileUser.name || '—';
+    if (contactProfilePhone) contactProfilePhone.textContent = profileUser.phone || 'Номер скрыт';
+    if (contactProfileId) contactProfileId.textContent = profileUser.id || '—';
+    if (contactProfileDialogType) contactProfileDialogType.textContent = 'Личный диалог';
+    if (contactProfileCreatedAt) contactProfileCreatedAt.textContent = formatContactProfileDate(profileUser.createdAt);
+
+    contactProfileModal.classList.remove('hidden');
+  } catch (error) {
+    alert(error.message || 'Не удалось открыть профиль');
+  } finally {
+    dialogProfileTrigger?.classList.remove('is-loading');
+  }
+}
+
+function closeContactProfile() {
+  if (!contactProfileModal) return;
+  contactProfileModal.classList.add('hidden');
+}
+
 function formatPreview(user) {
   if (user.type !== 'group') {
     if (user.isBlocked) return 'Пользователь в черном списке';
@@ -1559,6 +1657,7 @@ function updateDialogHeader() {
   }
 
   dialogTitle.textContent = getDisplayName(currentDialogUser);
+  updateDialogProfileTriggerState();
   renameDialogBtn.classList.toggle('hidden', currentDialogUser.type === 'group');
   addGroupMembersBtn?.classList.toggle('hidden', currentDialogUser.type !== 'group');
   suggestAvatarBtn?.classList.toggle('hidden', currentDialogUser.type === 'group');
