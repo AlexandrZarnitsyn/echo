@@ -107,6 +107,22 @@ const addGroupMembersBtn = document.getElementById('addGroupMembersBtn');
 const contactSuggestAvatarBtn = document.getElementById('contactSuggestAvatarBtn');
 const avatarSuggestionInput = document.getElementById('avatarSuggestionInput');
 
+const replyComposerBar = document.createElement('div');
+replyComposerBar.id = 'replyComposerBar';
+replyComposerBar.className = 'reply-composer hidden';
+replyComposerBar.innerHTML = `
+  <div class="reply-composer-line"></div>
+  <div class="reply-composer-body">
+    <div class="reply-composer-title" id="replyComposerTitle">Ответ</div>
+    <div class="reply-composer-text" id="replyComposerText"></div>
+  </div>
+  <button class="reply-composer-close" id="replyComposerClose" type="button" aria-label="Отменить ответ">×</button>
+`;
+inputArea?.insertBefore(replyComposerBar, composerTextRow);
+const replyComposerTitle = document.getElementById('replyComposerTitle');
+const replyComposerText = document.getElementById('replyComposerText');
+const replyComposerClose = document.getElementById('replyComposerClose');
+
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
 const SOCKET_URL = String(APP_CONFIG.SOCKET_URL || API_BASE_URL || '').replace(/\/$/, '');
@@ -262,6 +278,7 @@ let onlineUserIds = new Set();
 let socket = null;
 let blacklistUsers = [];
 let editingMessageId = null;
+let replyTargetMessageId = null;
 let notificationPrefs = { soundEnabled: true, silentMode: false };
 let audioContextRef = null;
 let currentDialogState = {
@@ -970,6 +987,7 @@ async function sendPendingAttachment() {
       else formData.append('recipientId', currentDialogUser.id);
       formData.append('text', index === 0 ? caption : '');
       formData.append('clientMessageId', createClientMessageId('upload'));
+      if (replyTargetMessageId && index === 0) formData.append('replyToMessageId', replyTargetMessageId);
       formData.append('file', file);
 
       const response = await fetch(apiUrl('/api/messages/upload'), {
@@ -979,6 +997,7 @@ async function sendPendingAttachment() {
       await parseApiResponse(response);
     }
     messageInput.value = '';
+    clearReplyTarget();
     closeAttachmentModal();
   } catch (error) {
     alert(error.message || 'Не удалось отправить файл');
@@ -1425,6 +1444,69 @@ function buildWaveBars(seedValue, count = 42) {
   return bars.join('');
 }
 
+function getMessageById(messageId) {
+  return currentDialogMessages.find((item) => String(item.id) === String(messageId)) || null;
+}
+
+function getReplySnippet(message) {
+  if (!message) return '';
+  if (message.replyPreviewDeletedAt || message.deletedAt) return 'Сообщение удалено';
+  const text = String(message.replyPreviewText || message.text || '').trim();
+  if (text) return text.length > 110 ? `${text.slice(0, 107)}…` : text;
+  const attachmentType = String(message.replyPreviewAttachmentType || message.attachmentType || '');
+  if (attachmentType === 'audio') return 'Голосовое сообщение';
+  if (attachmentType === 'image') return 'Фотография';
+  if (attachmentType === 'video') return 'Видео';
+  if (attachmentType === 'document') return `Документ${message.attachmentName ? `: ${message.attachmentName}` : ''}`;
+  if (attachmentType === 'avatar_suggestion') return 'Предложение аватарки';
+  return 'Сообщение';
+}
+
+function renderReplyComposer() {
+  if (!replyComposerBar || !replyComposerTitle || !replyComposerText) return;
+  const target = replyTargetMessageId ? getMessageById(replyTargetMessageId) : null;
+  replyComposerBar.classList.toggle('hidden', !target);
+  if (!target) {
+    document.querySelectorAll('.message.is-reply-target').forEach((node) => node.classList.remove('is-reply-target'));
+    return;
+  }
+  const isOwn = String(target.senderId || '') === String(currentUser?.id || '');
+  replyComposerTitle.textContent = isOwn ? 'Ответ себе' : `Ответ: ${target.senderName || 'Сообщение'}`;
+  replyComposerText.textContent = getReplySnippet(target);
+  document.querySelectorAll('.message').forEach((node) => node.classList.toggle('is-reply-target', node.dataset.id === String(target.id)));
+}
+
+function setReplyTarget(messageId) {
+  const target = getMessageById(messageId);
+  if (!target || target.deletedAt) return;
+  replyTargetMessageId = String(target.id);
+  renderReplyComposer();
+}
+
+function clearReplyTarget() {
+  replyTargetMessageId = null;
+  renderReplyComposer();
+}
+
+function createReplyPreviewNode(message) {
+  if (!message?.replyToMessageId) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'message-reply-preview';
+  const title = document.createElement('div');
+  title.className = 'message-reply-preview-title';
+  const senderName = message.replyPreviewSenderName || 'Сообщение';
+  title.textContent = String(message.replyPreviewSenderId || '') === String(currentUser?.id || '') ? 'Вы' : senderName;
+  const text = document.createElement('div');
+  text.className = 'message-reply-preview-text';
+  text.textContent = getReplySnippet(message);
+  wrap.append(title, text);
+  return wrap;
+}
+
+function isInteractiveMessageTarget(target) {
+  return Boolean(target.closest('button, a, input, textarea, video, audio, .dialog-media-clickable, .avatar-suggestion-card, .message-file-card'));
+}
+
 function createVoiceMessageNode(message, attachmentUrl, isMe) {
   const wrap = document.createElement('div');
   wrap.className = `voice-message ${isMe ? 'me' : 'other'}`;
@@ -1623,6 +1705,8 @@ function createMessageNode(message) {
   content.className = 'message-text';
   content.textContent = message.deletedAt ? 'Сообщение удалено' : (message.text || '');
 
+  const replyPreviewNode = !message.deletedAt ? createReplyPreviewNode(message) : null;
+
   const attachmentUrl = message.attachmentUrl ? resolveAssetUrl(message.attachmentUrl) : '';
   let mediaNode = null;
   if (!message.deletedAt && attachmentUrl) {
@@ -1667,6 +1751,7 @@ function createMessageNode(message) {
   meta.innerHTML = `<span>${getTime(message.createdAt)}</span>${editedMark}${getStatusDots(message)}`;
 
   if (message.isGroup || !isMe) node.appendChild(sender);
+  if (replyPreviewNode) node.appendChild(replyPreviewNode);
   if (content.textContent || message.deletedAt) node.appendChild(content);
   if (mediaNode) node.appendChild(mediaNode);
 
@@ -1685,6 +1770,16 @@ function createMessageNode(message) {
   }
 
   node.appendChild(meta);
+
+  if (!message.deletedAt) {
+    node.classList.add('reply-selectable');
+    node.title = 'Нажмите, чтобы ответить';
+    node.addEventListener('click', (event) => {
+      if (isInteractiveMessageTarget(event.target)) return;
+      setReplyTarget(message.id);
+    });
+  }
+
   return node;
 }
 
@@ -1698,6 +1793,7 @@ function addMessage(message) {
   currentDialogMessages.push(message);
   chat.appendChild(createMessageNode(message));
   scrollChatToBottom();
+  renderReplyComposer();
 }
 
 function upsertMessage(message) {
@@ -1709,6 +1805,7 @@ function upsertMessage(message) {
   if (existing) existing.replaceWith(replacement);
   else chat.appendChild(replacement);
   scrollChatToBottom();
+  renderReplyComposer();
 }
 
 function refreshMessageStatus(messageId, deliveredAt, readAt) {
@@ -1958,6 +2055,7 @@ async function selectDialog(userId) {
   showDialogUI(true);
   applyDialogRestrictions();
   resetEditingState();
+  clearReplyTarget();
 
   const response = await fetch(currentDialogUser.type === 'group'
     ? apiUrl(`/api/groups/${encodeURIComponent(currentDialogUser.rawId || String(userId).replace(/^group:/, ''))}/messages?currentUserId=${encodeURIComponent(currentUser.id)}`)
@@ -2003,6 +2101,7 @@ function exitDialog() {
   chat.innerHTML = '';
   shouldStickToBottom = true;
   resetEditingState();
+  clearReplyTarget();
   updateDialogHeader();
   applyDialogRestrictions();
   renderUsers();
@@ -2408,6 +2507,7 @@ function logout() {
   chat.innerHTML = '';
   shouldStickToBottom = true;
   resetEditingState();
+  clearReplyTarget();
   if (socket) {
     socket.disconnect();
     socket = null;
@@ -2456,9 +2556,10 @@ async function submitMessage() {
   if (sendBtn) sendBtn.disabled = true;
   try {
     const clientMessageId = createClientMessageId('text');
-    if (currentDialogUser.type === 'group') socket.emit('send-group-message', { text, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''), clientMessageId });
-    else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id, clientMessageId });
+    if (currentDialogUser.type === 'group') socket.emit('send-group-message', { text, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''), clientMessageId, replyToMessageId: replyTargetMessageId || '' });
+    else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id, clientMessageId, replyToMessageId: replyTargetMessageId || '' });
     messageInput.value = '';
+    clearReplyTarget();
     messageInput.focus();
     setTimeout(() => {
       isSubmittingTextMessage = false;
@@ -2480,6 +2581,7 @@ async function deleteMessage(messageId) {
     if (!response.ok) throw new Error(data.error || 'Не удалось удалить сообщение');
     upsertMessage(data.message);
     if (editingMessageId === messageId) resetEditingState();
+    if (replyTargetMessageId === messageId) clearReplyTarget();
     await loadUsers();
   } catch (error) {
     alert(error.message || 'Не удалось удалить сообщение');
@@ -2680,6 +2782,7 @@ passwordInput.addEventListener('keydown', (event) => {
 });
 searchInput.addEventListener('input', loadUsers);
 sendBtn.addEventListener('click', submitMessage);
+replyComposerClose?.addEventListener('click', clearReplyTarget);
 messageInput.addEventListener('input', () => {
   queueLocalTypingSignal();
 });

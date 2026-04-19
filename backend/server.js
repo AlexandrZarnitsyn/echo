@@ -91,7 +91,13 @@ function mapMessageRow(row) {
     isGroup: Boolean(row.group_id),
     audioListened: row.audio_listened === true || row.audio_listened === 't' || row.audio_listened === 1,
     avatarSuggestionStatus: row.avatar_suggestion_status || '',
-    avatarSuggestionTargetUserId: row.avatar_suggestion_target_user_id ? String(row.avatar_suggestion_target_user_id) : ''
+    avatarSuggestionTargetUserId: row.avatar_suggestion_target_user_id ? String(row.avatar_suggestion_target_user_id) : '',
+    replyToMessageId: row.reply_to_message_id ? String(row.reply_to_message_id) : '',
+    replyPreviewText: row.reply_preview_text || '',
+    replyPreviewAttachmentType: row.reply_preview_attachment_type || '',
+    replyPreviewSenderId: row.reply_preview_sender_id ? String(row.reply_preview_sender_id) : '',
+    replyPreviewSenderName: row.reply_preview_sender_name || '',
+    replyPreviewDeletedAt: row.reply_preview_deleted_at || null
   };
 }
 
@@ -606,6 +612,7 @@ async function initDatabase() {
     );
   `);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_id TEXT NULL REFERENCES media_files(id) ON DELETE SET NULL;`);
+  await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id TEXT NULL REFERENCES messages(id) ON DELETE SET NULL;`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS message_audio_plays (
@@ -718,6 +725,37 @@ function detectAttachmentType(file) {
   return '';
 }
 
+const MESSAGE_REPLY_SELECT = `
+  rm.id AS reply_preview_message_id,
+  rm.text AS reply_preview_text,
+  rm.attachment_type AS reply_preview_attachment_type,
+  rm.deleted_at AS reply_preview_deleted_at,
+  rm.sender_id AS reply_preview_sender_id,
+  rsu.name AS reply_preview_sender_name
+`;
+
+async function resolveReplyTargetMessage(currentUserId, { replyToMessageId = '', recipientId = '', groupId = '' } = {}) {
+  const messageId = String(replyToMessageId || '').trim();
+  if (!messageId) return null;
+  const result = await query(
+    `SELECT m.*
+     FROM messages m
+     WHERE m.id = $1
+       AND (
+         ($2 <> '' AND m.group_id = $2)
+         OR (
+           $2 = ''
+           AND m.group_id IS NULL
+           AND $3 <> ''
+           AND ((m.sender_id = $4 AND m.recipient_id = $3) OR (m.sender_id = $3 AND m.recipient_id = $4))
+         )
+       )
+     LIMIT 1`,
+    [messageId, String(groupId || ''), String(recipientId || ''), String(currentUserId || '')]
+  );
+  return result.rows[0] || null;
+}
+
 async function getFullMessageById(messageId) {
   const result = await query(
     `SELECT
@@ -728,12 +766,15 @@ async function getFullMessageById(messageId) {
         ru.phone AS recipient_phone,
         g.name AS group_name,
         avs.status AS avatar_suggestion_status,
-        avs.target_user_id AS avatar_suggestion_target_user_id
+        avs.target_user_id AS avatar_suggestion_target_user_id,
+        ${MESSAGE_REPLY_SELECT}
      FROM messages m
      INNER JOIN users su ON su.id = m.sender_id
      LEFT JOIN users ru ON ru.id = m.recipient_id
      LEFT JOIN groups g ON g.id = m.group_id
      LEFT JOIN avatar_suggestions avs ON avs.message_id = m.id
+     LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+     LEFT JOIN users rsu ON rsu.id = rm.sender_id
      WHERE m.id = $1`,
     [String(messageId)]
   );
@@ -1232,6 +1273,7 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
 
     const result = await query(
       `SELECT m.*, su.name AS sender_name, su.phone AS sender_phone, '' AS recipient_name, '' AS recipient_phone, g.name AS group_name,
+              ${MESSAGE_REPLY_SELECT},
               EXISTS (
                 SELECT 1
                 FROM message_audio_plays map
@@ -1244,6 +1286,8 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
        INNER JOIN users su ON su.id = m.sender_id
        INNER JOIN groups g ON g.id = m.group_id
        LEFT JOIN avatar_suggestions avs ON avs.message_id = m.id
+       LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+       LEFT JOIN users rsu ON rsu.id = rm.sender_id
        WHERE m.group_id = $1
        ORDER BY m.created_at ASC`,
       [groupId, currentUserId]
@@ -1426,11 +1470,14 @@ app.get('/api/messages/:otherUserId', async (req, res) => {
               END
           ) AS audio_listened,
           avs.status AS avatar_suggestion_status,
-          avs.target_user_id AS avatar_suggestion_target_user_id
+          avs.target_user_id AS avatar_suggestion_target_user_id,
+          ${MESSAGE_REPLY_SELECT}
        FROM messages m
        INNER JOIN users su ON su.id = m.sender_id
        INNER JOIN users ru ON ru.id = m.recipient_id
        LEFT JOIN avatar_suggestions avs ON avs.message_id = m.id
+       LEFT JOIN messages rm ON rm.id = m.reply_to_message_id
+       LEFT JOIN users rsu ON rsu.id = rm.sender_id
        WHERE m.dialog_id = $1
        ORDER BY m.created_at ASC`,
       [dialogId, currentUserId]
@@ -1546,6 +1593,7 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
     const groupId = String(req.body?.groupId || '');
     const text = String(req.body?.text || '').trim();
     const clientMessageId = String(req.body?.clientMessageId || '').trim() || null;
+    const replyToMessageId = String(req.body?.replyToMessageId || '').trim();
     const file = req.file;
 
     if (!senderId || (!recipientId && !groupId)) {
@@ -1587,6 +1635,8 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
       deliveredAt = onlineUsers.has(String(recipient.id)) ? new Date().toISOString() : null;
     }
 
+    const replyTarget = await resolveReplyTargetMessage(senderId, { replyToMessageId, recipientId: recipientId || storedRecipientId, groupId });
+
     const attachmentType = detectAttachmentType(file);
     if (!attachmentType) {
       return res.status(400).json({ error: 'Можно отправлять фото, видео, голосовые и Office-файлы' });
@@ -1604,9 +1654,9 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
     try {
       await query(
         `INSERT INTO messages (
-          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, group_id, media_id, client_message_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, '', $7, $8, $9, $10, $11)`,
-        [messageId, dialogId, text, String(sender.id), storedRecipientId, deliveredAt, attachmentType, file.originalname || '', groupId || null, mediaId, clientMessageId]
+          id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, group_id, media_id, client_message_id, reply_to_message_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, '', $7, $8, $9, $10, $11, $12)`,
+        [messageId, dialogId, text, String(sender.id), storedRecipientId, deliveredAt, attachmentType, file.originalname || '', groupId || null, mediaId, clientMessageId, replyTarget?.id || null]
       );
     } catch (insertError) {
       if (String(insertError?.code || '') === '23505' && clientMessageId) {
@@ -1858,13 +1908,14 @@ io.on('connection', (socket) => {
       const recipientOnline = onlineUsers.has(String(recipient.id));
       const messageId = crypto.randomUUID();
       const clientMessageId = String(payload.clientMessageId || '').trim() || null;
+      const replyTarget = await resolveReplyTargetMessage(sender.id, { replyToMessageId: payload.replyToMessageId, recipientId: recipient.id });
 
       try {
         await query(
           `INSERT INTO messages (
-            id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, client_message_id
-           ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7)`,
-          [messageId, dialogId, String(payload.text).trim(), String(sender.id), String(recipient.id), recipientOnline ? new Date().toISOString() : null, clientMessageId]
+            id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, client_message_id, reply_to_message_id
+           ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8)`,
+          [messageId, dialogId, String(payload.text).trim(), String(sender.id), String(recipient.id), recipientOnline ? new Date().toISOString() : null, clientMessageId, replyTarget?.id || null]
         );
       } catch (insertError) {
         if (String(insertError?.code || '') === '23505' && clientMessageId) return;
@@ -1890,12 +1941,13 @@ io.on('connection', (socket) => {
 
       const messageId = crypto.randomUUID();
       const clientMessageId = String(payload.clientMessageId || '').trim() || null;
+      const replyTarget = await resolveReplyTargetMessage(sender.id, { replyToMessageId: payload.replyToMessageId, groupId });
       try {
         await query(
           `INSERT INTO messages (
-            id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, group_id, client_message_id
-           ) VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, $6, $7)`,
-          [messageId, `group:${groupId}`, String(payload.text).trim(), String(sender.id), String(sender.id), groupId, clientMessageId]
+            id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, group_id, client_message_id, reply_to_message_id
+           ) VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, $6, $7, $8)`,
+          [messageId, `group:${groupId}`, String(payload.text).trim(), String(sender.id), String(sender.id), groupId, clientMessageId, replyTarget?.id || null]
         );
       } catch (insertError) {
         if (String(insertError?.code || '') === '23505' && clientMessageId) return;
