@@ -361,6 +361,49 @@ function formatContactProfileDate(value) {
   }).format(date);
 }
 
+function pluralizeRu(value, forms) {
+  const abs = Math.abs(Number(value)) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return forms[2];
+  if (last > 1 && last < 5) return forms[1];
+  if (last === 1) return forms[0];
+  return forms[2];
+}
+
+function formatLastSeen(value) {
+  if (!value) return 'давно';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'недавно';
+
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs <= 0) return 'только что';
+
+  const diffMinutes = Math.floor(diffMs / 60000);
+  if (diffMinutes < 1) return 'только что';
+  if (diffMinutes < 60) return `${diffMinutes} ${pluralizeRu(diffMinutes, ['минуту', 'минуты', 'минут'])} назад`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} ${pluralizeRu(diffHours, ['час', 'часа', 'часов'])} назад`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays === 1) {
+    return `вчера в ${getTime(date.toISOString())}`;
+  }
+  if (diffDays < 7) {
+    return `${diffDays} ${pluralizeRu(diffDays, ['день', 'дня', 'дней'])} назад`;
+  }
+
+  return formatContactProfileDate(date.toISOString());
+}
+
+function getPresenceText(user) {
+  if (!user) return 'Не в сети';
+  const userId = String(user.id || '');
+  if (userId && onlineUserIds.has(userId)) return 'Онлайн';
+  const lastSeenAt = user.lastSeenAt || lastSeenMap[userId] || null;
+  return lastSeenAt ? `Был(а) в сети ${formatLastSeen(lastSeenAt)}` : 'Не в сети';
+}
+
 function updateDialogProfileTriggerState() {
   if (!dialogProfileTrigger) return;
   const canOpen = Boolean(currentDialogUser);
