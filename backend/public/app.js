@@ -23,6 +23,7 @@ const inputArea = document.getElementById('inputArea');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const messageAttachBtn = document.getElementById('messageAttachBtn');
+const voiceRecordBtn = document.getElementById('voiceRecordBtn');
 const messageAttachmentInput = document.getElementById('messageAttachmentInput');
 const messageAttachmentPreview = document.getElementById('messageAttachmentPreview');
 const messageAttachmentName = document.getElementById('messageAttachmentName');
@@ -63,6 +64,12 @@ const chatScrollControls = document.getElementById('chatScrollControls');
 const scrollToTopBtn = document.getElementById('scrollToTopBtn');
 const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 const themeSwitcher = document.getElementById('themeSwitcher');
+const createGroupBtn = document.getElementById('createGroupBtn');
+const groupModal = document.getElementById('groupModal');
+const groupNameInput = document.getElementById('groupNameInput');
+const groupMembersList = document.getElementById('groupMembersList');
+const cancelGroupBtn = document.getElementById('cancelGroupBtn');
+const saveGroupBtn = document.getElementById('saveGroupBtn');
 
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
@@ -92,6 +99,10 @@ let currentDialogState = {
 let shouldStickToBottom = true;
 let pendingAttachment = null;
 let isUploadingAttachment = false;
+let mediaRecorder = null;
+let mediaRecorderStream = null;
+let recordedChunks = [];
+let isRecordingVoice = false;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -126,6 +137,7 @@ function getDialogAliases() {
 
 function getDisplayName(user) {
   if (!user) return '';
+  if (user.type === 'group') return user.name || 'Беседа';
   const aliases = getDialogAliases();
   return aliases[user.id] || user.name;
 }
@@ -218,11 +230,13 @@ function formatPhoneForDisplay(phone = '') {
 }
 
 function formatPreview(user) {
-  if (user.isBlocked) return 'Пользователь в черном списке';
-  if (user.blockedByUser) return 'Пользователь ограничил переписку';
-  if (!user.lastMessage) return user.phone ? formatPhoneForDisplay(user.phone) : 'Нажмите, чтобы начать диалог';
-  const prefix = user.lastMessage.senderId === currentUser.id ? 'Вы: ' : '';
-  return `${prefix}${describeMessagePreview(user.lastMessage)}`;
+  if (user.type !== 'group') {
+    if (user.isBlocked) return 'Пользователь в черном списке';
+    if (user.blockedByUser) return 'Пользователь ограничил переписку';
+  }
+  if (!user.lastMessage) return user.type === 'group' ? 'Нажмите, чтобы открыть беседу' : (user.phone ? formatPhoneForDisplay(user.phone) : 'Нажмите, чтобы начать диалог');
+  const senderPrefix = user.lastMessage.senderId === currentUser.id ? 'Вы: ' : (user.type === 'group' && user.lastMessage.senderName ? `${user.lastMessage.senderName}: ` : '');
+  return `${senderPrefix}${describeMessagePreview(user.lastMessage)}`;
 }
 
 
@@ -231,6 +245,7 @@ function describeMessagePreview(message) {
   if (message.deletedAt) return 'Сообщение удалено';
   if (message.attachmentType === 'image') return message.text ? `Фото · ${message.text}` : 'Фото';
   if (message.attachmentType === 'video') return message.text ? `Видео · ${message.text}` : 'Видео';
+  if (message.attachmentType === 'audio') return message.text ? `Голосовое · ${message.text}` : 'Голосовое сообщение';
   return message.text || 'Новое сообщение';
 }
 
@@ -368,6 +383,11 @@ function createAttachmentPreviewElement(file) {
     mediaNode.playsInline = true;
     mediaNode.preload = 'metadata';
     mediaNode.controls = true;
+  } else if (file.type.startsWith('audio/')) {
+    mediaNode = document.createElement('audio');
+    mediaNode.className = 'attachment-preview-media';
+    mediaNode.src = previewUrl;
+    mediaNode.controls = true;
   } else {
     mediaNode = document.createElement('img');
     mediaNode.className = 'attachment-preview-media';
@@ -400,7 +420,7 @@ function closeAttachmentModal() {
 function openAttachmentModal(file) {
   if (!file) return;
   pendingAttachment = file;
-  if (attachmentModalTitle) attachmentModalTitle.textContent = file.type.startsWith('video/') ? 'Отправить видео' : 'Отправить изображение';
+  if (attachmentModalTitle) attachmentModalTitle.textContent = file.type.startsWith('video/') ? 'Отправить видео' : (file.type.startsWith('audio/') ? 'Отправить голосовое сообщение' : 'Отправить изображение');
   if (attachmentCaptionInput) attachmentCaptionInput.value = messageInput.value.trim();
   createAttachmentPreviewElement(file);
   if (attachmentModal) attachmentModal.classList.remove('hidden');
@@ -411,9 +431,9 @@ function setPendingAttachment(file) {
     closeAttachmentModal();
     return;
   }
-  const isSupported = file.type.startsWith('image/') || file.type.startsWith('video/');
+  const isSupported = file.type.startsWith('image/') || file.type.startsWith('video/') || file.type.startsWith('audio/');
   if (!isSupported) {
-    alert('Можно отправлять только фото и видео');
+    alert('Можно отправлять фото, видео и голосовые сообщения');
     return;
   }
   openAttachmentModal(file);
@@ -422,7 +442,7 @@ function setPendingAttachment(file) {
 function formatAttachmentSize(file) {
   if (!file) return '';
   const mb = file.size / (1024 * 1024);
-  return `${file.type.startsWith('video/') ? 'Видео' : 'Фото'} · ${mb >= 1 ? mb.toFixed(1) + ' МБ' : Math.max(1, Math.round(file.size / 1024)) + ' КБ'}`;
+  return `${file.type.startsWith('video/') ? 'Видео' : file.type.startsWith('audio/') ? 'Голосовое' : 'Фото'} · ${mb >= 1 ? mb.toFixed(1) + ' МБ' : Math.max(1, Math.round(file.size / 1024)) + ' КБ'}`;
 }
 
 function updateAttachmentSubtitle() {}
@@ -434,7 +454,8 @@ async function sendPendingAttachment() {
   const caption = (attachmentCaptionInput?.value || '').trim();
   const formData = new FormData();
   formData.append('currentUserId', currentUser.id);
-  formData.append('recipientId', currentDialogUser.id);
+  if (currentDialogUser?.type === 'group') formData.append('groupId', currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''));
+  else formData.append('recipientId', currentDialogUser.id);
   formData.append('text', caption);
   formData.append('file', pendingAttachment);
 
@@ -737,6 +758,12 @@ function createMessageNode(message) {
           openMediaViewer(attachmentUrl, 'video', message.attachmentName || 'Видео');
         }
       });
+    } else if (message.attachmentType === 'audio') {
+      mediaNode = document.createElement('audio');
+      mediaNode.className = 'dialog-audio';
+      mediaNode.src = attachmentUrl;
+      mediaNode.controls = true;
+      mediaNode.preload = 'metadata';
     } else {
       mediaNode = document.createElement('a');
       mediaNode.className = 'message-attachment-link';
@@ -752,11 +779,11 @@ function createMessageNode(message) {
   const editedMark = message.editedAt && !message.deletedAt ? '<span class="edited-mark">ред.</span>' : '';
   meta.innerHTML = `<span>${getTime(message.createdAt)}</span>${editedMark}${getStatusDots(message)}`;
 
-  node.appendChild(sender);
+  if (message.isGroup || !isMe) node.appendChild(sender);
   if (content.textContent || message.deletedAt) node.appendChild(content);
   if (mediaNode) node.appendChild(mediaNode);
 
-  if (isMe && !message.deletedAt) {
+  if (isMe && !message.deletedAt && !message.isGroup) {
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     actions.innerHTML = `
@@ -813,6 +840,7 @@ function syncCurrentUserFromList(sourceUser) {
 function applyDialogRestrictions() {
   if (!currentDialogUser) {
     blockToggleBtn.classList.add('hidden');
+    if (voiceRecordBtn) voiceRecordBtn.disabled = false;
     chatStatusBanner.classList.add('hidden');
     chatStatusBanner.textContent = '';
     inputArea.classList.remove('disabled');
@@ -838,6 +866,7 @@ function applyDialogRestrictions() {
   messageInput.disabled = !currentDialogState.canMessage;
   sendBtn.disabled = !currentDialogState.canMessage;
   if (messageAttachBtn) messageAttachBtn.disabled = !currentDialogState.canMessage;
+  if (voiceRecordBtn) voiceRecordBtn.disabled = !currentDialogState.canMessage;
   if (!editingMessageId) {
     messageInput.placeholder = currentDialogState.canMessage ? 'Введите сообщение...' : 'Отправка сообщений недоступна';
   }
@@ -845,11 +874,17 @@ function applyDialogRestrictions() {
 
 async function loadUsers() {
   const search = searchInput.value.trim();
-  const response = await fetch(
-    apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)
-  );
-  const data = await response.json();
-  users = data.users || [];
+  const [usersResponse, groupsResponse] = await Promise.all([
+    fetch(apiUrl(`/api/users?currentUserId=${encodeURIComponent(currentUser.id)}&search=${encodeURIComponent(search)}`)),
+    fetch(apiUrl(`/api/groups?currentUserId=${encodeURIComponent(currentUser.id)}`))
+  ]);
+  const [data, groupsData] = await Promise.all([usersResponse.json(), groupsResponse.json()]);
+  const groups = (groupsData.groups || []).filter((group) => !search || getDisplayName(group).toLowerCase().includes(search.toLowerCase()));
+  users = [...(groups || []), ...(data.users || [])].sort((a, b) => {
+    const at = a.lastMessage?.createdAt ? new Date(a.lastMessage.createdAt).getTime() : 0;
+    const bt = b.lastMessage?.createdAt ? new Date(b.lastMessage.createdAt).getTime() : 0;
+    return bt - at || getDisplayName(a).localeCompare(getDisplayName(b), 'ru');
+  });
 
   if (currentDialogUser) {
     const foundCurrent = users.find((user) => user.id === currentDialogUser.id);
@@ -893,11 +928,14 @@ function updateDialogHeader() {
   }
 
   dialogTitle.textContent = getDisplayName(currentDialogUser);
-  renameDialogBtn.classList.remove('hidden');
-  const phoneText = currentDialogUser.phone ? currentDialogUser.phone : 'Номер скрыт';
-  dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id)
-    ? `${phoneText} · онлайн`
-    : phoneText;
+  renameDialogBtn.classList.toggle('hidden', currentDialogUser.type === 'group');
+  if (currentDialogUser.type === 'group') {
+    const count = Array.isArray(currentDialogUser.memberIds) ? currentDialogUser.memberIds.length : 0;
+    dialogSubtitle.textContent = count > 0 ? `${count} участников` : 'Групповая беседа';
+  } else {
+    const phoneText = currentDialogUser.phone ? currentDialogUser.phone : 'Номер скрыт';
+    dialogSubtitle.textContent = onlineUserIds.has(currentDialogUser.id) ? `${phoneText} · онлайн` : phoneText;
+  }
   backToDialogsBtn.classList.remove('hidden');
 }
 
@@ -917,7 +955,9 @@ async function selectDialog(userId) {
   applyDialogRestrictions();
   resetEditingState();
 
-  const response = await fetch(apiUrl(`/api/messages/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`));
+  const response = await fetch(currentDialogUser.type === 'group'
+    ? apiUrl(`/api/groups/${encodeURIComponent(currentDialogUser.rawId || String(userId).replace(/^group:/, ''))}/messages?currentUserId=${encodeURIComponent(currentUser.id)}`)
+    : apiUrl(`/api/messages/${userId}?currentUserId=${encodeURIComponent(currentUser.id)}`));
   const data = await response.json();
 
   currentDialogState = {
@@ -937,7 +977,8 @@ async function selectDialog(userId) {
   updateDialogHeader();
 
   if (socket) {
-    socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: userId });
+    if (currentDialogUser.type === 'group') socket.emit('open-dialog', { currentUserId: currentUser.id, groupId: currentDialogUser.rawId || String(userId).replace(/^group:/, '') });
+    else socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: userId });
   }
 
   await loadUsers();
@@ -974,10 +1015,13 @@ function setupSocket() {
   });
 
   socket.on('private-message', async (message) => {
-    const isCurrentDialog = currentDialogUser && message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':');
+    const isCurrentDialog = currentDialogUser && (currentDialogUser.type === 'group'
+      ? message.groupId && message.groupId === (currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, ''))
+      : message.dialogId === [currentUser.id, currentDialogUser.id].sort().join(':'));
     if (isCurrentDialog) {
       addMessage(message);
-      socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
+      if (currentDialogUser.type === 'group') socket.emit('open-dialog', { currentUserId: currentUser.id, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '') });
+      else socket.emit('open-dialog', { currentUserId: currentUser.id, otherUserId: currentDialogUser.id });
     }
     handleIncomingNotification(message, Boolean(isCurrentDialog));
     await loadUsers();
@@ -998,6 +1042,16 @@ function setupSocket() {
     upsertMessage(message);
     await loadUsers();
     if (editingMessageId === message.id) resetEditingState();
+  });
+
+
+  socket.on('group:updated', async (group) => {
+    if (!group) return;
+    const existingIndex = users.findIndex((item) => item.id === group.id);
+    if (existingIndex >= 0) users[existingIndex] = { ...users[existingIndex], ...group };
+    else users.unshift(group);
+    renderUsers();
+    await loadUsers();
   });
 
   socket.on('user:updated', async (user) => {
@@ -1024,6 +1078,97 @@ function setupSocket() {
       await loadBlacklist();
     }
   });
+}
+
+
+async function renderGroupMembers() {
+  if (!groupMembersList) return;
+  groupMembersList.innerHTML = '';
+  const response = await fetch(apiUrl(`/api/users/all?currentUserId=${encodeURIComponent(currentUser.id)}`));
+  const data = await response.json();
+  const candidates = (data.users || []).filter((user) => user.id !== currentUser.id);
+  if (!candidates.length) {
+    groupMembersList.innerHTML = '<div class="blacklist-empty">Нет доступных пользователей для добавления.</div>';
+    return;
+  }
+  candidates.forEach((user) => {
+    const label = document.createElement('label');
+    label.className = 'group-member-option';
+    label.innerHTML = `
+      <input type="checkbox" value="${user.id}" />
+      ${getAvatarImgMarkup(user, 'profile-avatar', 'avatar')}
+      <div class="group-member-meta">
+        <div class="group-member-name">${getDisplayName(user)}</div>
+        <div class="group-member-phone">${user.phone || 'Номер скрыт'}</div>
+      </div>
+    `;
+    groupMembersList.appendChild(label);
+  });
+}
+
+async function openGroupModal() {
+  if (!groupModal) return;
+  groupNameInput.value = '';
+  groupModal.classList.remove('hidden');
+  await renderGroupMembers();
+}
+
+function closeGroupModal() {
+  if (!groupModal) return;
+  groupModal.classList.add('hidden');
+}
+
+async function saveGroup() {
+  const name = groupNameInput?.value?.trim() || '';
+  const memberIds = [...groupMembersList.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+  try {
+    const response = await fetch(apiUrl('/api/groups'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentUserId: currentUser.id, name, memberIds })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Не удалось создать беседу');
+    closeGroupModal();
+    await loadUsers();
+    if (data.group?.id) await selectDialog(data.group.id);
+  } catch (error) {
+    alert(error.message || 'Не удалось создать беседу');
+  }
+}
+
+async function toggleVoiceRecording() {
+  if (isRecordingVoice) {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    alert('Ваш браузер не поддерживает запись голосовых сообщений');
+    return;
+  }
+  try {
+    mediaRecorderStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    mediaRecorder = new MediaRecorder(mediaRecorderStream, { mimeType });
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+    };
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      const file = new File([blob], `voice_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
+      setPendingAttachment(file);
+      isRecordingVoice = false;
+      if (voiceRecordBtn) voiceRecordBtn.textContent = '🎤';
+      mediaRecorderStream?.getTracks?.().forEach((track) => track.stop());
+      mediaRecorderStream = null;
+    };
+    mediaRecorder.start();
+    isRecordingVoice = true;
+    if (voiceRecordBtn) voiceRecordBtn.textContent = '■';
+  } catch (error) {
+    alert('Не удалось получить доступ к микрофону');
+  }
 }
 
 async function submitAuth() {
@@ -1074,6 +1219,7 @@ function logout() {
     socket = null;
   }
   closeProfileModal();
+  closeGroupModal();
   showDialogUI(false);
   showScreen(authScreen);
 }
@@ -1107,7 +1253,8 @@ async function submitMessage() {
   }
 
   if (!text || !socket) return;
-  socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
+  if (currentDialogUser.type === 'group') socket.emit('send-group-message', { text, groupId: currentDialogUser.rawId || String(currentDialogUser.id).replace(/^group:/, '') });
+  else socket.emit('send-private-message', { text, recipientId: currentDialogUser.id });
   messageInput.value = '';
   messageInput.focus();
 }
@@ -1181,7 +1328,7 @@ function renderBlacklist() {
 }
 
 function renameCurrentDialogUser() {
-  if (!currentDialogUser) return;
+  if (!currentDialogUser || currentDialogUser.type === 'group') return;
   const currentAlias = getDisplayName(currentDialogUser);
   const alias = window.prompt('Введите имя для этого собеседника. Пустое значение вернет исходное имя.', currentAlias === currentDialogUser.name ? '' : currentAlias);
   if (alias === null) return;
@@ -1259,6 +1406,7 @@ async function saveProfile() {
     }
 
     closeProfileModal();
+  closeGroupModal();
     await loadUsers();
   } catch (error) {
     alert(error.message || 'Не удалось сохранить профиль');
@@ -1266,7 +1414,7 @@ async function saveProfile() {
 }
 
 async function toggleBlockUser() {
-  if (!currentDialogUser) return;
+  if (!currentDialogUser || currentDialogUser.type === 'group') return;
 
   const method = currentDialogState.isBlocked ? 'DELETE' : 'POST';
   const response = await fetch(apiUrl(`/api/block/${currentDialogUser.id}${method === 'DELETE' ? `?currentUserId=${encodeURIComponent(currentUser.id)}` : ''}`), {
@@ -1328,6 +1476,13 @@ renameDialogBtn.addEventListener('click', renameCurrentDialogUser);
 if (messageAttachBtn) {
   messageAttachBtn.addEventListener('click', () => messageAttachmentInput.click());
 }
+if (voiceRecordBtn) {
+  voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
+}
+if (createGroupBtn) createGroupBtn.addEventListener('click', openGroupModal);
+if (cancelGroupBtn) cancelGroupBtn.addEventListener('click', closeGroupModal);
+if (saveGroupBtn) saveGroupBtn.addEventListener('click', saveGroup);
+if (groupModal) groupModal.addEventListener('click', (event) => { if (event.target === groupModal) closeGroupModal(); });
 
 if (messageAttachmentInput) {
   messageAttachmentInput.addEventListener('change', () => {
@@ -1461,6 +1616,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   if (!profileModal.classList.contains('hidden')) {
     closeProfileModal();
+  closeGroupModal();
     return;
   }
   if (currentDialogUser) {

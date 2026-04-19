@@ -1813,3 +1813,20 @@ body[data-theme="dark"] .group-members-list {
 body[data-theme="dark"] .group-member-option {
   background: rgba(15,23,42,.68);
 }
+
+
+.dialog-audio {
+  width: min(320px, 100%);
+  max-width: 100%;
+  margin-top: 8px;
+}
+
+#voiceRecordBtn {
+  font-size: 18px;
+}
+
+body[data-theme='dark'] #voiceRecordBtn {
+  background: linear-gradient(135deg, #172033, #1e2b43);
+  color: #dbeafe;
+  border-color: #22304a;
+}
