@@ -28,6 +28,17 @@ const messageAttachmentPreview = document.getElementById('messageAttachmentPrevi
 const messageAttachmentName = document.getElementById('messageAttachmentName');
 const clearMessageAttachmentBtn = document.getElementById('clearMessageAttachmentBtn');
 const messageAttachmentPreviewMedia = document.getElementById('messageAttachmentPreviewMedia');
+const attachmentModal = document.getElementById('attachmentModal');
+const attachmentModalTitle = document.getElementById('attachmentModalTitle');
+const attachmentModalPreview = document.getElementById('attachmentModalPreview');
+const attachmentModalCloseBtn = document.getElementById('attachmentModalCloseBtn');
+const attachmentCaptionInput = document.getElementById('attachmentCaptionInput');
+const attachmentChooseAnotherBtn = document.getElementById('attachmentChooseAnotherBtn');
+const attachmentCancelBtn = document.getElementById('attachmentCancelBtn');
+const attachmentSendBtn = document.getElementById('attachmentSendBtn');
+const mediaViewerModal = document.getElementById('mediaViewerModal');
+const mediaViewerContent = document.getElementById('mediaViewerContent');
+const mediaViewerCloseBtn = document.getElementById('mediaViewerCloseBtn');
 const composerDropHint = document.getElementById('composerDropHint');
 const profileModal = document.getElementById('profileModal');
 const closeProfileBtn = document.getElementById('closeProfileBtn');
@@ -307,6 +318,40 @@ function syncAvatarElement(target, user, className = 'profile-avatar', alt = 'av
     target.src = DEFAULT_AVATAR;
     target.dataset.currentSrc = DEFAULT_AVATAR;
   };
+}
+
+
+function closeMediaViewer() {
+  if (!mediaViewerModal || !mediaViewerContent) return;
+  mediaViewerModal.classList.add('hidden');
+  mediaViewerContent.querySelectorAll('video').forEach((video) => {
+    try { video.pause(); } catch (e) {}
+    video.removeAttribute('src');
+    try { video.load(); } catch (e) {}
+  });
+  mediaViewerContent.innerHTML = '';
+}
+
+function openMediaViewer(url, type, name) {
+  if (!mediaViewerModal || !mediaViewerContent || !url) return;
+  mediaViewerContent.innerHTML = '';
+  let node;
+  if (type === 'video') {
+    node = document.createElement('video');
+    node.className = 'media-viewer-video';
+    node.src = url;
+    node.controls = true;
+    node.autoplay = true;
+    node.playsInline = true;
+    node.preload = 'metadata';
+  } else {
+    node = document.createElement('img');
+    node.className = 'media-viewer-image';
+    node.src = url;
+    node.alt = name || 'Вложение';
+  }
+  mediaViewerContent.appendChild(node);
+  mediaViewerModal.classList.remove('hidden');
 }
 
 function createAttachmentPreviewElement(file) {
@@ -675,16 +720,23 @@ function createMessageNode(message) {
   if (!message.deletedAt && attachmentUrl) {
     if (message.attachmentType === 'image') {
       mediaNode = document.createElement('img');
-      mediaNode.className = 'dialog-media';
+      mediaNode.className = 'dialog-media dialog-media-clickable';
       mediaNode.src = attachmentUrl;
       mediaNode.alt = message.attachmentName || 'Фото';
       mediaNode.loading = 'lazy';
+      mediaNode.addEventListener('click', () => openMediaViewer(attachmentUrl, 'image', message.attachmentName || 'Фото'));
     } else if (message.attachmentType === 'video') {
       mediaNode = document.createElement('video');
-      mediaNode.className = 'dialog-video';
+      mediaNode.className = 'dialog-video dialog-media-clickable';
       mediaNode.src = attachmentUrl;
       mediaNode.controls = true;
       mediaNode.preload = 'metadata';
+      mediaNode.addEventListener('click', (event) => {
+        if (event.target === mediaNode) {
+          event.preventDefault();
+          openMediaViewer(attachmentUrl, 'video', message.attachmentName || 'Видео');
+        }
+      });
     } else {
       mediaNode = document.createElement('a');
       mediaNode.className = 'message-attachment-link';
@@ -1284,7 +1336,21 @@ if (messageAttachmentInput) {
   });
 }
 
+
 if (attachmentModalCloseBtn) attachmentModalCloseBtn.addEventListener('click', closeAttachmentModal);
+if (attachmentCancelBtn) attachmentCancelBtn.addEventListener('click', closeAttachmentModal);
+if (mediaViewerCloseBtn) mediaViewerCloseBtn.addEventListener('click', closeMediaViewer);
+if (mediaViewerModal) {
+  mediaViewerModal.addEventListener('click', (event) => {
+    if (event.target === mediaViewerModal) closeMediaViewer();
+  });
+}
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && mediaViewerModal && !mediaViewerModal.classList.contains('hidden')) {
+    closeMediaViewer();
+  }
+});
+
 if (attachmentCancelBtn) attachmentCancelBtn.addEventListener('click', closeAttachmentModal);
 if (attachmentChooseAnotherBtn) attachmentChooseAnotherBtn.addEventListener('click', () => messageAttachmentInput && messageAttachmentInput.click());
 if (attachmentSendBtn) attachmentSendBtn.addEventListener('click', sendPendingAttachment);
