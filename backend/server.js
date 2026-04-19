@@ -501,7 +501,7 @@ app.put('/api/profile', async (req, res) => {
   }
 });
 
-app.post('/api/profile/photo', diskUpload.single('photo'), async (req, res) => {
+app.post('/api/profile/photo', memoryUpload.single('photo'), async (req, res) => {
   try {
     const userId = String(req.body.userId || '');
     const existing = await getUserById(userId);
@@ -512,14 +512,32 @@ app.post('/api/profile/photo', diskUpload.single('photo'), async (req, res) => {
       return res.status(400).json({ error: 'Фото не загружено' });
     }
 
-    await query('UPDATE users SET photo = $2 WHERE id = $1', [userId, `/uploads/${req.file.filename}`]);
+    const file = req.file;
+    const mediaId = crypto.randomUUID();
+    await query(
+      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        mediaId,
+        userId,
+        String(file.mimetype || 'application/octet-stream'),
+        String(file.originalname || 'avatar'),
+        Number(file.size || 0),
+        file.buffer
+      ]
+    );
+
+    await query('UPDATE users SET photo = $2 WHERE id = $1', [userId, `/api/media/${mediaId}`]);
     const user = await getUserById(userId);
     const blockedUserIds = await getBlockedIds(user.id);
     io.emit('user:updated', publicUser(user));
     res.json({ user: publicUser(user, user.id, blockedUserIds) });
   } catch (error) {
     console.error('photo upload error', error);
-    res.status(500).json({ error: 'Не удалось загрузить фото' });
+    if (String(error?.code || '') === 'ENOSPC') {
+      return res.status(507).json({ error: 'На сервере закончилось место для временных файлов' });
+    }
+    res.status(500).json({ error: error.message || 'Не удалось загрузить фото' });
   }
 });
 
