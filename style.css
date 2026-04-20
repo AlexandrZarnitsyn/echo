@@ -3205,3 +3205,33 @@ body.light-theme .message-reply-trigger {
   .call-bar.connected { width: calc(100vw - 16px); top: 10px; }
   .call-bar.connected .call-bar-card { padding: 9px 10px; gap: 10px; }
 }
+
+
+/* v59 call sync and centered outgoing modal */
+.outgoing-call-modal .primary-btn#acceptCallBtn { display: none !important; }
+.call-bar.hidden { display: none !important; }
+.call-event-row { align-items: center !important; }
+.call-event-row .sender, .call-event-row .message-actions, .call-event-row .message-reply-trigger { display:none !important; }
+.call-event-row .meta { justify-content:center; opacity:.85; }
+.call-event-message {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(30,41,59,.82);
+  border: 1px solid rgba(96,165,250,.18);
+  color: #dbeafe;
+  font-size: 13px;
+  font-weight: 700;
+}
+@media (max-width: 900px) {
+  .call-bar.connected {
+    left: 50% !important;
+    right: auto !important;
+    top: 10px !important;
+    transform: translateX(-50%) !important;
+    width: calc(100vw - 16px) !important;
+  }
+}
