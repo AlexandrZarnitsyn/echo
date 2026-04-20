@@ -255,9 +255,14 @@ function updateCallUi() {
     }
     if (callBarAvatar) callBarAvatar.src = getCallPeerAvatar();
     if (callBarTimer) callBarTimer.classList.toggle('hidden', !activeCall.startedAt);
-    if (muteCallBtn) muteCallBtn.textContent = activeCall.isMuted ? '🔇' : '🎙️';
+    callBar?.classList.toggle('connected', !!activeCall.startedAt);
+    if (muteCallBtn) {
+      muteCallBtn.classList.toggle('muted', !!activeCall.isMuted);
+      muteCallBtn.innerHTML = activeCall.isMuted ? `<span class="call-control-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M4.7 3.3a1 1 0 0 0-1.4 1.4l5.76 5.76A4.1 4.1 0 0 0 9 11v1a3 3 0 0 0 4.63 2.52l1.44 1.44A5.05 5.05 0 0 1 12 17a5 5 0 0 1-5-5 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V21H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.08c1.32-.19 2.52-.75 3.48-1.58l2.82 2.82a1 1 0 0 0 1.4-1.4Zm10.2 8.7a3 3 0 0 1-.38 1.46l1.48 1.48c.57-.88.9-1.93.9-3.04a1 1 0 1 1 2 0 7 7 0 0 1-.98 3.6l-1.55-1.55A1 1 0 0 0 14.9 12ZM12 4a3 3 0 0 1 3 3v3.17l-6-6V7c0-.22.02-.43.07-.64A2.98 2.98 0 0 1 12 4Z"/></svg></span>` : `<span class="call-control-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 0 0 10 0Z"/></svg></span>`;
+    }
   } else {
     callBar?.classList.add('hidden');
+    callBar?.classList.remove('connected');
     if (callBarStatus) callBarStatus.classList.remove('call-dots');
     stopCallTimer();
   }

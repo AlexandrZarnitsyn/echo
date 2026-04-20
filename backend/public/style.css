@@ -3109,3 +3109,90 @@ body.light-theme .message-reply-trigger {
   }
 }
 
+
+
+/* v57 call controls and connected top layout */
+.icon-call-btn {
+  min-width: 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: rgba(41, 51, 66, 0.95);
+  border: 1px solid rgba(255,255,255,0.06);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.icon-call-btn:hover { background: rgba(52, 63, 80, 0.98); }
+.call-btn-icon, .call-control-icon { display:inline-flex; align-items:center; justify-content:center; }
+.call-btn-icon svg, .call-control-icon svg { width: 20px; height: 20px; fill: #b8c1cf; }
+.call-bar {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 8, 23, 0.72);
+  backdrop-filter: blur(10px);
+}
+.call-bar.connected {
+  inset: auto auto auto 50%;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 24px));
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+  align-items: flex-start;
+  justify-content: center;
+}
+.call-bar-card {
+  width: min(420px, calc(100vw - 32px));
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(5,13,34,.98), rgba(7,18,46,.96));
+  border: 1px solid rgba(96,165,250,.22);
+  box-shadow: 0 30px 80px rgba(2,6,23,.48);
+  padding: 28px 22px 22px;
+  display:flex; flex-direction:column; align-items:center; text-align:center;
+}
+.call-bar.connected .call-bar-card {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  border-radius: 18px;
+  background: rgba(5, 13, 34, 0.94);
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.35);
+  padding: 10px 12px;
+  text-align: left;
+}
+.call-bar-avatar-wrap { position: relative; width: 112px; height: 112px; display:flex; align-items:center; justify-content:center; margin-bottom: 18px; }
+.call-bar.connected .call-bar-avatar-wrap { width: 48px; height: 48px; margin: 0; }
+.call-bar-avatar { width: 92px; height: 92px; border-radius: 50%; object-fit: cover; border: 3px solid rgba(45,212,191,.45); position: relative; z-index: 2; box-shadow: 0 16px 40px rgba(34,211,238,.18); }
+.call-bar.connected .call-bar-avatar { width: 48px; height: 48px; border-width: 2px; }
+.call-bar-pulse { position: absolute; width: 112px; height: 112px; border-radius: 50%; border: 1px solid rgba(45,212,191,.35); animation: callPulse 2s infinite; }
+.call-bar.connected .call-bar-pulse { display: none; }
+.call-bar-title { font-size: 28px; font-weight: 800; color: #eff6ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.call-bar.connected .call-bar-title { font-size: 15px; }
+.call-bar-status { font-size: 15px; color: #67e8f9; margin-top: 6px; min-height: 22px; }
+.call-bar.connected .call-bar-status { font-size: 12px; color: #93c5fd; margin-top: 2px; min-height: 16px; }
+.call-bar-timer { margin-top: 10px; font-size: 26px; font-weight: 800; letter-spacing: .06em; color: #f8fafc; }
+.call-bar.connected .call-bar-timer { margin-top: 3px; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+.call-bar-actions { display:flex; gap: 12px; align-items:center; justify-content:center; margin-top: 22px; width: 100%; }
+.call-bar.connected .call-bar-actions { gap: 8px; justify-content:flex-end; margin-top:0; width:auto; }
+.call-control-btn {
+  min-width: 48px; width: 48px; height: 48px; padding: 0; display:inline-flex; align-items:center; justify-content:center; border-radius: 16px;
+  background: rgba(41, 51, 66, 0.95); border: 1px solid rgba(255,255,255,0.06); box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.call-control-btn:hover { background: rgba(52, 63, 80, 0.98); }
+.call-control-btn.muted { background: rgba(75, 85, 99, 0.95); }
+.call-end-btn { min-width: 48px; width: 48px; height: 48px; border-radius: 16px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
+.call-bar.connected .call-end-btn::before { content: "✕"; font-size: 18px; font-weight: 800; }
+.call-bar.connected .call-end-btn { font-size: 0; }
+@media (max-width: 900px) {
+  .call-bar.connected { width: calc(100vw - 16px); top: 10px; }
+  .call-bar.connected .call-bar-card { padding: 9px 10px; gap: 10px; }
+}
