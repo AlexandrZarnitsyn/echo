@@ -71,6 +71,7 @@
               <div class="header-subtitle" id="dialogSubtitle">Личные сообщения в реальном времени</div>
             </div>
             <div class="chat-header-actions">
+              <button class="ghost-btn hidden" id="audioCallBtn" type="button" title="Аудиозвонок">Позвонить</button>
               <button class="ghost-btn hidden" id="addGroupMembersBtn" type="button">Добавить людей</button>
             </div>
           </div>
@@ -309,6 +310,35 @@
           <button class="primary-btn" id="saveGroupBtn" type="button">Создать</button>
         </div>
       </div>
+    </div>
+  </div>
+
+
+  <div class="modal-backdrop hidden" id="incomingCallModal">
+    <div class="modal-card call-modal-card">
+      <div class="modal-title">Входящий звонок</div>
+      <div class="call-modal-avatar-wrap">
+        <img class="call-modal-avatar" id="incomingCallAvatar" alt="caller" />
+      </div>
+      <div class="call-modal-name" id="incomingCallName">Пользователь</div>
+      <div class="call-modal-subtitle">Аудиозвонок</div>
+      <div class="modal-footer">
+        <div class="modal-actions call-modal-actions">
+          <button class="ghost-btn" id="declineCallBtn" type="button">Отклонить</button>
+          <button class="primary-btn" id="acceptCallBtn" type="button">Ответить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="call-bar hidden" id="callBar">
+    <div class="call-bar-info">
+      <div class="call-bar-title" id="callBarTitle">Звонок</div>
+      <div class="call-bar-status" id="callBarStatus">Подключение…</div>
+    </div>
+    <div class="call-bar-actions">
+      <button class="ghost-btn" id="muteCallBtn" type="button">Микрофон</button>
+      <button class="primary-btn call-end-btn" id="endCallBtn" type="button">Завершить</button>
     </div>
   </div>
 

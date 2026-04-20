@@ -104,6 +104,17 @@ const groupNameWrap = document.getElementById('groupNameWrap');
 const cancelGroupBtn = document.getElementById('cancelGroupBtn');
 const saveGroupBtn = document.getElementById('saveGroupBtn');
 const addGroupMembersBtn = document.getElementById('addGroupMembersBtn');
+const audioCallBtn = document.getElementById('audioCallBtn');
+const incomingCallModal = document.getElementById('incomingCallModal');
+const incomingCallAvatar = document.getElementById('incomingCallAvatar');
+const incomingCallName = document.getElementById('incomingCallName');
+const acceptCallBtn = document.getElementById('acceptCallBtn');
+const declineCallBtn = document.getElementById('declineCallBtn');
+const callBar = document.getElementById('callBar');
+const callBarTitle = document.getElementById('callBarTitle');
+const callBarStatus = document.getElementById('callBarStatus');
+const muteCallBtn = document.getElementById('muteCallBtn');
+const endCallBtn = document.getElementById('endCallBtn');
 const contactSuggestAvatarBtn = document.getElementById('contactSuggestAvatarBtn');
 const avatarSuggestionInput = document.getElementById('avatarSuggestionInput');
 
@@ -129,7 +140,192 @@ function isCompactMobileLayout() {
 
 function syncResponsiveLayout() {
   document.body.classList.toggle('mobile-chat-open', Boolean(currentDialogUser) && isCompactMobileLayout());
+  updateCallUi();
 }
+
+
+function isPersonalDialogOpen() {
+  return Boolean(currentDialogUser && currentDialogUser.type !== 'group');
+}
+
+function ensureRemoteAudioElement() {
+  if (remoteCallAudio) return remoteCallAudio;
+  remoteCallAudio = document.createElement('audio');
+  remoteCallAudio.autoplay = true;
+  remoteCallAudio.playsInline = true;
+  remoteCallAudio.className = 'hidden';
+  document.body.appendChild(remoteCallAudio);
+  return remoteCallAudio;
+}
+
+function updateCallUi() {
+  const canCall = Boolean(currentUser && isPersonalDialogOpen() && currentDialogState.canMessage);
+  audioCallBtn?.classList.toggle('hidden', !canCall);
+  if (activeCall) {
+    callBar?.classList.remove('hidden');
+    const name = activeCall.peerName || (currentDialogUser ? getDisplayName(currentDialogUser) : 'Собеседник');
+    if (callBarTitle) callBarTitle.textContent = name;
+    if (callBarStatus) callBarStatus.textContent = activeCall.status || 'Подключение…';
+    if (muteCallBtn) muteCallBtn.textContent = activeCall.isMuted ? 'Микрофон выкл' : 'Микрофон';
+  } else {
+    callBar?.classList.add('hidden');
+  }
+}
+
+function closeIncomingCallModal() {
+  incomingCallModal?.classList.add('hidden');
+}
+
+function openIncomingCallModal(payload = {}) {
+  incomingCallOffer = payload;
+  if (incomingCallName) incomingCallName.textContent = payload.callerName || 'Пользователь';
+  if (incomingCallAvatar) incomingCallAvatar.src = payload.callerPhoto || DEFAULT_AVATAR;
+  incomingCallModal?.classList.remove('hidden');
+}
+
+function setCallStatus(status) {
+  if (activeCall) {
+    activeCall.status = status;
+    updateCallUi();
+  }
+}
+
+async function cleanupCall(reason = '', notifyRemote = false) {
+  const previous = activeCall;
+  activeCall = null;
+  incomingCallOffer = null;
+  closeIncomingCallModal();
+  try {
+    previous?.peerConnection?.getSenders?.().forEach((sender) => { try { sender.track && sender.track.stop(); } catch {} });
+    previous?.peerConnection?.close?.();
+  } catch {}
+  if (localCallStream) {
+    localCallStream.getTracks().forEach((track) => track.stop());
+    localCallStream = null;
+  }
+  const audio = ensureRemoteAudioElement();
+  audio.srcObject = null;
+  if (notifyRemote && socket && currentUser && previous?.peerId) {
+    socket.emit('call:end', { fromUserId: currentUser.id, toUserId: previous.peerId, reason: reason || 'ended' });
+  }
+  updateCallUi();
+}
+
+async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
+  const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS });
+  const stream = localCallStream || await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  localCallStream = stream;
+  stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+  const remoteStream = new MediaStream();
+  ensureRemoteAudioElement().srcObject = remoteStream;
+  pc.ontrack = (event) => {
+    event.streams[0]?.getTracks().forEach((track) => remoteStream.addTrack(track));
+    setCallStatus('Звонок активен');
+  };
+  pc.onicecandidate = (event) => {
+    if (!event.candidate || !socket || !currentUser) return;
+    socket.emit('call:ice-candidate', { fromUserId: currentUser.id, toUserId: peerId, candidate: event.candidate });
+  };
+  pc.onconnectionstatechange = () => {
+    const state = pc.connectionState;
+    if (state === 'connected') setCallStatus('Звонок активен');
+    else if (state === 'connecting') setCallStatus('Подключение…');
+    else if (state === 'failed' || state === 'disconnected' || state === 'closed') cleanupCall('connection_closed', false);
+  };
+  activeCall = { peerId: String(peerId), peerName: peerName || '', peerConnection: pc, status: isInitiator ? 'Звоним…' : 'Подключение…', isMuted: false };
+  updateCallUi();
+  return pc;
+}
+
+async function startAudioCall() {
+  if (!socket || !currentUser || !isPersonalDialogOpen() || activeCall) return;
+  try {
+    const peerId = String(currentDialogUser.id);
+    const peerName = getDisplayName(currentDialogUser);
+    const pc = await createCallPeerConnection(peerId, peerName, true);
+    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
+    await pc.setLocalDescription(offer);
+    socket.emit('call:offer', {
+      fromUserId: currentUser.id,
+      toUserId: peerId,
+      callerName: currentUser.name,
+      callerPhoto: currentUser.photo || '',
+      offer
+    });
+  } catch (error) {
+    await cleanupCall('', false);
+    alert(error.message || 'Не удалось начать звонок');
+  }
+}
+
+async function acceptIncomingCall() {
+  if (!incomingCallOffer || !socket || !currentUser) return;
+  try {
+    const payload = incomingCallOffer;
+    closeIncomingCallModal();
+    const pc = await createCallPeerConnection(payload.fromUserId, payload.callerName || '', false);
+    await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('call:answer', { fromUserId: currentUser.id, toUserId: payload.fromUserId, answer });
+    incomingCallOffer = null;
+  } catch (error) {
+    socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer?.fromUserId, reason: 'error' });
+    await cleanupCall('', false);
+    alert(error.message || 'Не удалось принять звонок');
+  }
+}
+
+function rejectIncomingCall() {
+  if (!incomingCallOffer || !socket || !currentUser) return closeIncomingCallModal();
+  socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer.fromUserId, reason: 'declined' });
+  incomingCallOffer = null;
+  closeIncomingCallModal();
+}
+
+async function handleCallOffer(payload = {}) {
+  if (!currentUser?.id) return;
+  if (activeCall) {
+    socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: payload.fromUserId, reason: 'busy' });
+    return;
+  }
+  openIncomingCallModal(payload);
+}
+
+async function handleCallAnswer(payload = {}) {
+  if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  await activeCall.peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
+  setCallStatus('Подключение…');
+}
+
+async function handleCallIceCandidate(payload = {}) {
+  if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  try {
+    await activeCall.peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+  } catch (error) {
+    console.error('addIceCandidate error', error);
+  }
+}
+
+function handleCallRejected(payload = {}) {
+  if (!activeCall || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  const reasonMap = { busy: 'Пользователь занят', declined: 'Звонок отклонён', unavailable: 'Пользователь недоступен' };
+  alert(reasonMap[payload.reason] || 'Звонок отклонён');
+  cleanupCall('', false);
+}
+
+function handleCallEnded(payload = {}) {
+  if (!activeCall || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  cleanupCall('', false);
+}
+
+function toggleMuteCall() {
+  if (!localCallStream || !activeCall) return;
+  activeCall.isMuted = !activeCall.isMuted;
+  localCallStream.getAudioTracks().forEach((track) => { track.enabled = !activeCall.isMuted; });
+  updateCallUi();
+}
+
 
 const APP_CONFIG = window.APP_CONFIG || {};
 const API_BASE_URL = String(APP_CONFIG.API_BASE_URL || '').replace(/\/$/, '');
@@ -327,6 +523,11 @@ let recordingSourceNode = null;
 let recordingDragState = null;
 let isFinishingVoiceRecording = false;
 let isSubmittingTextMessage = false;
+let activeCall = null;
+let incomingCallOffer = null;
+let localCallStream = null;
+let remoteCallAudio = null;
+const CALL_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -2216,6 +2417,12 @@ function setupSocket() {
     socket.emit('join-user', currentUser);
   });
 
+  socket.on('call:offer', (payload = {}) => handleCallOffer(payload));
+  socket.on('call:answer', (payload = {}) => handleCallAnswer(payload));
+  socket.on('call:ice-candidate', (payload = {}) => handleCallIceCandidate(payload));
+  socket.on('call:reject', (payload = {}) => handleCallRejected(payload));
+  socket.on('call:end', (payload = {}) => handleCallEnded(payload));
+
   socket.on('presence:update', ({ userId, isOnline, lastSeenAt }) => {
     if (isOnline) {
       onlineUserIds.add(userId);
@@ -3182,7 +3389,15 @@ async function bootstrapSavedSession() {
 }
 
 function initializeApp() {
-  loadSavedTheme();
+  
+audioCallBtn?.addEventListener('click', startAudioCall);
+acceptCallBtn?.addEventListener('click', acceptIncomingCall);
+declineCallBtn?.addEventListener('click', rejectIncomingCall);
+endCallBtn?.addEventListener('click', () => cleanupCall('ended', true));
+muteCallBtn?.addEventListener('click', toggleMuteCall);
+window.addEventListener('beforeunload', () => { if (activeCall) cleanupCall('ended', true); });
+
+loadSavedTheme();
   loadNotificationPrefs();
   syncNotificationControls();
   bootstrapSavedSession();
@@ -3193,6 +3408,14 @@ if (document.readyState === 'loading') {
 } else {
   initializeApp();
 }
+
+
+audioCallBtn?.addEventListener('click', startAudioCall);
+acceptCallBtn?.addEventListener('click', acceptIncomingCall);
+declineCallBtn?.addEventListener('click', rejectIncomingCall);
+endCallBtn?.addEventListener('click', () => cleanupCall('ended', true));
+muteCallBtn?.addEventListener('click', toggleMuteCall);
+window.addEventListener('beforeunload', () => { if (activeCall) cleanupCall('ended', true); });
 
 loadSavedTheme();
 if (attachmentModalPrevBtn) attachmentModalPrevBtn.addEventListener('click', () => stepAttachmentPreview(-1));

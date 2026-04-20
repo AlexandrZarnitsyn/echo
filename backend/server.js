@@ -2089,6 +2089,73 @@ io.on('connection', (socket) => {
     }
   });
 
+
+
+  socket.on('call:offer', async (payload = {}) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser?.id) return;
+      const sender = await getUserById(activeUser.id);
+      const recipientId = String(payload.toUserId || '').trim();
+      if (!sender || !recipientId) return;
+      const recipient = await getUserById(recipientId);
+      if (!recipient) return;
+      if (await areUsersBlocked(sender.id, recipient.id)) return;
+      io.to(`user:${recipient.id}`).emit('call:offer', { fromUserId: String(sender.id), callerName: sender.name, callerPhoto: sender.photo || '', offer: payload.offer || null });
+    } catch (error) {
+      console.error('call:offer error', error);
+    }
+  });
+
+  socket.on('call:answer', async (payload = {}) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser?.id) return;
+      const sender = await getUserById(activeUser.id);
+      const recipientId = String(payload.toUserId || '').trim();
+      if (!sender || !recipientId) return;
+      io.to(`user:${recipientId}`).emit('call:answer', { fromUserId: String(sender.id), answer: payload.answer || null });
+    } catch (error) {
+      console.error('call:answer error', error);
+    }
+  });
+
+  socket.on('call:ice-candidate', async (payload = {}) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser?.id) return;
+      const recipientId = String(payload.toUserId || '').trim();
+      if (!recipientId || !payload.candidate) return;
+      io.to(`user:${recipientId}`).emit('call:ice-candidate', { fromUserId: String(activeUser.id), candidate: payload.candidate });
+    } catch (error) {
+      console.error('call:ice-candidate error', error);
+    }
+  });
+
+  socket.on('call:reject', async (payload = {}) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser?.id) return;
+      const recipientId = String(payload.toUserId || '').trim();
+      if (!recipientId) return;
+      io.to(`user:${recipientId}`).emit('call:reject', { fromUserId: String(activeUser.id), reason: String(payload.reason || 'declined') });
+    } catch (error) {
+      console.error('call:reject error', error);
+    }
+  });
+
+  socket.on('call:end', async (payload = {}) => {
+    try {
+      const activeUser = socket.data.user;
+      if (!activeUser?.id) return;
+      const recipientId = String(payload.toUserId || '').trim();
+      if (!recipientId) return;
+      io.to(`user:${recipientId}`).emit('call:end', { fromUserId: String(activeUser.id), reason: String(payload.reason || 'ended') });
+    } catch (error) {
+      console.error('call:end error', error);
+    }
+  });
+
   socket.on('disconnect', () => {
     const activeUser = socket.data.user;
     if (!activeUser?.id) return;
