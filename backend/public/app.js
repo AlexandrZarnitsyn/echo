@@ -130,7 +130,7 @@ const replyComposerText = document.getElementById('replyComposerText');
 const replyComposerClose = document.getElementById('replyComposerClose');
 
 function isCompactMobileLayout() {
-  return window.innerWidth <= 900 || window.matchMedia('(pointer: coarse)').matches;
+  return window.innerWidth <= 900;
 }
 
 function syncResponsiveLayout() {
