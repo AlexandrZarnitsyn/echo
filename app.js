@@ -177,6 +177,50 @@ async function tryPlayRemoteAudio() {
   }
 }
 
+function normalizeCallIceServersForBrowser(servers = []) {
+  const normalized = [];
+  for (const server of Array.isArray(servers) ? servers : []) {
+    const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
+    for (const url of urls.map((item) => String(item || '').trim()).filter(Boolean)) {
+      normalized.push({
+        urls: url,
+        ...(server?.username ? { username: server.username } : {}),
+        ...(server?.credential ? { credential: server.credential } : {})
+      });
+    }
+  }
+  return normalized.length ? normalized : [{ urls: 'stun:stun.l.google.com:19302' }];
+}
+
+function hasTurnIceServer(servers = []) {
+  return normalizeCallIceServersForBrowser(servers).some((server) => {
+    const url = String(server?.urls || '');
+    return url.startsWith('turn:') || url.startsWith('turns:');
+  });
+}
+
+function queuePendingIncomingCallCandidate(callId, candidate) {
+  const normalizedCallId = String(callId || '').trim();
+  if (!normalizedCallId || !candidate) return;
+  const queue = pendingIncomingCallCandidates.get(normalizedCallId) || [];
+  queue.push(candidate);
+  pendingIncomingCallCandidates.set(normalizedCallId, queue);
+}
+
+async function flushPendingIncomingCallCandidates(callId, peerConnection) {
+  const normalizedCallId = String(callId || '').trim();
+  if (!normalizedCallId || !peerConnection?.remoteDescription) return;
+  const queue = pendingIncomingCallCandidates.get(normalizedCallId) || [];
+  pendingIncomingCallCandidates.delete(normalizedCallId);
+  for (const candidate of queue) {
+    try {
+      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (error) {
+      console.warn('Deferred incoming addIceCandidate error', error);
+    }
+  }
+}
+
 async function flushPendingIceCandidates() {
   if (!activeCall?.peerConnection || !activeCall.pendingCandidates?.length) return;
   if (!activeCall.peerConnection.remoteDescription) return;
@@ -370,17 +414,18 @@ async function cleanupCall(reason = '', notifyRemote = false) {
   const audio = ensureRemoteAudioElement();
   audio.srcObject = null;
   if (notifyRemote && socket && currentUser && previous?.peerId) {
-    socket.emit('call:end', { fromUserId: currentUser.id, toUserId: previous.peerId, reason: reason || 'ended' });
+    socket.emit('call:end', { callId: previous.callId || '', fromUserId: currentUser.id, toUserId: previous.peerId, reason: reason || 'ended' });
   }
   updateCallUi();
 }
 
-async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
+async function createCallPeerConnection(peerId, peerName, isInitiator = false, callId = '') {
   await loadCallConfig();
-  const transportPolicy = CALL_FORCE_RELAY && CALL_ICE_SERVERS.some((server) => String(server?.urls || '').includes('turn:')) ? 'relay' : 'all';
+  const normalizedIceServers = normalizeCallIceServersForBrowser(CALL_ICE_SERVERS);
+  const transportPolicy = CALL_FORCE_RELAY && hasTurnIceServer(normalizedIceServers) ? 'relay' : 'all';
   const pc = new RTCPeerConnection({
-    iceServers: CALL_ICE_SERVERS,
-    iceCandidatePoolSize: 6,
+    iceServers: normalizedIceServers,
+    iceCandidatePoolSize: 10,
     bundlePolicy: 'max-bundle',
     rtcpMuxPolicy: 'require',
     iceTransportPolicy: transportPolicy
@@ -412,20 +457,24 @@ async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
       remoteStream.addTrack(event.track);
     }
     tryPlayRemoteAudio();
+    setTimeout(() => tryPlayRemoteAudio(), 250);
+    setTimeout(() => tryPlayRemoteAudio(), 1000);
   };
   pc.onicecandidate = (event) => {
     if (!event.candidate || !socket || !currentUser) return;
-    socket.emit('call:ice-candidate', { fromUserId: currentUser.id, toUserId: peerId, candidate: event.candidate });
+    socket.emit('call:ice-candidate', { callId: activeCall?.callId || callId || '', fromUserId: currentUser.id, toUserId: peerId, candidate: event.candidate });
   };
-  pc.onconnectionstatechange = () => {
+  pc.onconnectionstatechange = async () => {
     const state = pc.connectionState;
     if (state === 'connected') { setCallStatus('Звонок активен'); stopCallTone(); }
     else if (state === 'connecting') setCallStatus(isInitiator ? 'Идёт звонок' : 'Подключение…');
-    else if (state === 'failed') cleanupCall('connection_failed', false);
+    else if (state === 'failed') {
+      try { await pc.restartIce(); setCallStatus('Переподключение…'); } catch { cleanupCall('connection_failed', false); }
+    }
     else if (state === 'disconnected') setCallStatus('Переподключение…');
     else if (state === 'closed') cleanupCall('connection_closed', false);
   };
-  pc.oniceconnectionstatechange = () => {
+  pc.oniceconnectionstatechange = async () => {
     const state = pc.iceConnectionState;
     if (state === 'connected' || state === 'completed') {
       setCallStatus('Звонок активен');
@@ -433,12 +482,13 @@ async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
     } else if (state === 'checking') {
       setCallStatus(isInitiator ? 'Идёт звонок' : 'Подключение…');
     } else if (state === 'failed') {
-      cleanupCall('ice_failed', false);
+      try { await pc.restartIce(); setCallStatus('Переподключение…'); } catch { cleanupCall('ice_failed', false); }
     } else if (state === 'disconnected') {
       setCallStatus('Переподключение…');
     }
   };
   activeCall = {
+    callId: String(callId || createClientMessageId('call')),
     peerId: String(peerId),
     peerName: peerName || '',
     peerPhoto: (currentDialogUser && String(currentDialogUser.id) === String(peerId)) ? (getAvatar(currentDialogUser) || DEFAULT_AVATAR) : DEFAULT_AVATAR,
@@ -458,11 +508,13 @@ async function startAudioCall() {
     await loadCallConfig();
     const peerId = String(currentDialogUser.id);
     const peerName = getDisplayName(currentDialogUser);
-    const pc = await createCallPeerConnection(peerId, peerName, true);
+    const callId = createClientMessageId('call');
+    const pc = await createCallPeerConnection(peerId, peerName, true, callId);
     const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
     await pc.setLocalDescription(offer);
     playToneBurst('outgoing');
     socket.emit('call:offer', {
+      callId: activeCall?.callId || callId,
       fromUserId: currentUser.id,
       toUserId: peerId,
       callerName: currentUser.name,
@@ -482,15 +534,16 @@ async function acceptIncomingCall() {
     const payload = incomingCallOffer;
     stopCallTone();
     closeIncomingCallModal();
-    const pc = await createCallPeerConnection(payload.fromUserId, payload.callerName || '', false);
+    const pc = await createCallPeerConnection(payload.fromUserId, payload.callerName || '', false, payload.callId || '');
     await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
+    await flushPendingIncomingCallCandidates(payload.callId || '', pc);
     await flushPendingIceCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    socket.emit('call:answer', { fromUserId: currentUser.id, toUserId: payload.fromUserId, answer });
+    socket.emit('call:answer', { callId: activeCall?.callId || payload.callId || '', fromUserId: currentUser.id, toUserId: payload.fromUserId, answer });
     incomingCallOffer = null;
   } catch (error) {
-    socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer?.fromUserId, reason: 'error' });
+    socket.emit('call:reject', { callId: incomingCallOffer?.callId || '', fromUserId: currentUser.id, toUserId: incomingCallOffer?.fromUserId, reason: 'error' });
     await cleanupCall('', false);
     alert(error.message || 'Не удалось принять звонок');
   }
@@ -499,7 +552,7 @@ async function acceptIncomingCall() {
 function rejectIncomingCall() {
   if (!incomingCallOffer || !socket || !currentUser) return closeIncomingCallModal();
   stopCallTone();
-  socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer.fromUserId, reason: 'declined' });
+  socket.emit('call:reject', { callId: incomingCallOffer.callId || '', fromUserId: currentUser.id, toUserId: incomingCallOffer.fromUserId, reason: 'declined' });
   incomingCallOffer = null;
   closeIncomingCallModal();
 }
@@ -507,7 +560,7 @@ function rejectIncomingCall() {
 async function handleCallOffer(payload = {}) {
   if (!currentUser?.id) return;
   if (activeCall) {
-    socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: payload.fromUserId, reason: 'busy' });
+    socket.emit('call:reject', { callId: payload.callId || '', fromUserId: currentUser.id, toUserId: payload.fromUserId, reason: 'busy' });
     return;
   }
   openIncomingCallModal(payload);
@@ -515,14 +568,20 @@ async function handleCallOffer(payload = {}) {
 
 async function handleCallAnswer(payload = {}) {
   if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (payload.callId && activeCall.callId && String(payload.callId) !== String(activeCall.callId)) return;
   await activeCall.peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
   await flushPendingIceCandidates();
   setCallStatus('Соединение устанавливается…');
 }
 
 async function handleCallIceCandidate(payload = {}) {
-  if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
   if (!payload.candidate) return;
+  if ((!activeCall || !activeCall.peerConnection) && incomingCallOffer?.callId && String(payload.callId || '') === String(incomingCallOffer.callId)) {
+    queuePendingIncomingCallCandidate(payload.callId, payload.candidate);
+    return;
+  }
+  if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (payload.callId && activeCall.callId && String(payload.callId) !== String(activeCall.callId)) return;
   if (!activeCall.peerConnection.remoteDescription) {
     activeCall.pendingCandidates = activeCall.pendingCandidates || [];
     activeCall.pendingCandidates.push(payload.candidate);
@@ -537,6 +596,7 @@ async function handleCallIceCandidate(payload = {}) {
 
 function handleCallRejected(payload = {}) {
   if (!activeCall || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (payload.callId && activeCall.callId && String(payload.callId) !== String(activeCall.callId)) return;
   const reasonMap = { busy: 'Пользователь занят', declined: 'Звонок отклонён', unavailable: 'Пользователь недоступен' };
   alert(reasonMap[payload.reason] || 'Звонок отклонён');
   cleanupCall('', false);
@@ -544,6 +604,7 @@ function handleCallRejected(payload = {}) {
 
 function handleCallEnded(payload = {}) {
   if (!activeCall || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (payload.callId && activeCall.callId && String(payload.callId) !== String(activeCall.callId)) return;
   cleanupCall('', false);
 }
 
@@ -757,6 +818,7 @@ let localCallStream = null;
 let remoteCallAudio = null;
 let CALL_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 let CALL_FORCE_RELAY = false;
+let pendingIncomingCallCandidates = new Map();
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
