@@ -39,3 +39,16 @@ To keep uploaded avatars after redeploys, mount a Railway volume to your backend
 
 Можно подключить вторую PostgreSQL базу через переменную `SECONDARY_DATABASE_URL`.
 В этой сборке основная БД остаётся источником правды, а вторая БД используется для хранения бинарных данных медиа, если переменная задана.
+
+
+## WebRTC / TURN для аудиозвонков
+
+Для сложных сетей и мобильных операторов можно включить TURN на бэкенде через переменные окружения:
+
+```env
+TURN_URLS=turn:your-turn-host:3478?transport=udp,turn:your-turn-host:3478?transport=tcp
+TURN_USERNAME=your_user
+TURN_CREDENTIAL=your_password
+```
+
+Альтернатива — передать полный JSON через `WEBRTC_ICE_SERVERS_JSON`. Клиент автоматически загрузит конфиг с `/api/webrtc/config`.

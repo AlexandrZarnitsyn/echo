@@ -628,12 +628,26 @@ let activeCall = null;
 let incomingCallOffer = null;
 let localCallStream = null;
 let remoteCallAudio = null;
-const CALL_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+let CALL_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
 const THEME_STORAGE_KEY = 'messengerTheme';
 const NOTIFICATION_PREFS_KEY = 'messengerNotificationPrefs';
+
+
+async function loadCallConfig() {
+  try {
+    const response = await fetch(apiUrl('/api/webrtc/config'));
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (Array.isArray(payload?.iceServers) && payload.iceServers.length) {
+      CALL_ICE_SERVERS = payload.iceServers;
+    }
+  } catch (error) {
+    console.warn('Failed to load call config, using default STUN only', error);
+  }
+}
 
 function applyTheme(theme = 'dark') {
   const normalizedTheme = theme === 'light' ? 'light' : 'dark';
@@ -3482,6 +3496,7 @@ async function bootstrapSavedSession() {
     renderCurrentUser();
     showScreen(chatScreen);
     restoreDialogsCache();
+    await loadCallConfig();
     setupSocket();
     await loadUsers();
   } catch {

@@ -9,6 +9,57 @@ const { Pool } = require('pg');
 const { Server } = require('socket.io');
 
 const app = express();
+
+const DEFAULT_CALL_ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
+];
+
+function normalizeIceServerEntry(entry) {
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    const urls = entry.split(',').map((item) => item.trim()).filter(Boolean);
+    return urls.length ? { urls } : null;
+  }
+  if (typeof entry !== 'object') return null;
+  const urls = Array.isArray(entry.urls) ? entry.urls.map((item) => String(item || '').trim()).filter(Boolean) : String(entry.urls || '').split(',').map((item) => item.trim()).filter(Boolean);
+  if (!urls.length) return null;
+  const server = { urls };
+  if (entry.username) server.username = String(entry.username);
+  if (entry.credential) server.credential = String(entry.credential);
+  return server;
+}
+
+function getCallIceServers() {
+  const rawJson = process.env.WEBRTC_ICE_SERVERS_JSON || '';
+  if (rawJson.trim()) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      const list = (Array.isArray(parsed) ? parsed : [parsed]).map(normalizeIceServerEntry).filter(Boolean);
+      if (list.length) return list;
+    } catch (error) {
+      console.error('Failed to parse WEBRTC_ICE_SERVERS_JSON', error);
+    }
+  }
+
+  const turnUrls = String(process.env.TURN_URLS || '').split(/\s*,\s*/).filter(Boolean);
+  const turnUsername = String(process.env.TURN_USERNAME || '').trim();
+  const turnCredential = String(process.env.TURN_CREDENTIAL || '').trim();
+  if (turnUrls.length) {
+    return [
+      ...DEFAULT_CALL_ICE_SERVERS,
+      {
+        urls: turnUrls,
+        ...(turnUsername ? { username: turnUsername } : {}),
+        ...(turnCredential ? { credential: turnCredential } : {})
+      }
+    ];
+  }
+
+  return DEFAULT_CALL_ICE_SERVERS;
+}
+
+const CALL_ICE_SERVERS = getCallIceServers();
+
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3000;
@@ -2170,6 +2221,11 @@ io.on('connection', (socket) => {
       onlineUsers.set(activeUser.id, count - 1);
     }
   });
+});
+
+
+app.get('/api/webrtc/config', (_req, res) => {
+  res.json({ iceServers: CALL_ICE_SERVERS });
 });
 
 app.get('/api/dialogs/bootstrap', async (req, res) => {
