@@ -116,6 +116,7 @@ const callBarStatus = document.getElementById('callBarStatus');
 const muteCallBtn = document.getElementById('muteCallBtn');
 const endCallBtn = document.getElementById('endCallBtn');
 const incomingCallSubtitle = document.getElementById('incomingCallSubtitle');
+const incomingCallTitle = incomingCallModal?.querySelector('.modal-title');
 const callBarAvatar = document.getElementById('callBarAvatar');
 const callBarTimer = document.getElementById('callBarTimer');
 const contactSuggestAvatarBtn = document.getElementById('contactSuggestAvatarBtn');
@@ -190,6 +191,11 @@ async function flushPendingIceCandidates() {
 let callTimerInterval = null;
 let callToneCtx = null;
 let callToneTimeout = null;
+
+function cryptoRandomId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `call_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function formatCallDuration(totalSeconds = 0) {
   const secs = Math.max(0, Math.floor(totalSeconds));
@@ -270,28 +276,55 @@ function getCallPeerAvatar() {
 function updateCallUi() {
   const canCall = Boolean(currentUser && isPersonalDialogOpen() && currentDialogState.canMessage);
   audioCallBtn?.classList.toggle('hidden', !canCall);
-  if (activeCall) {
-    callBar?.classList.remove('hidden');
+
+  const hasConnectedCall = Boolean(activeCall && activeCall.startedAt);
+  const hasOutgoingPending = Boolean(activeCall && !activeCall.startedAt && activeCall.isInitiator);
+  const hasIncomingPending = Boolean(!activeCall && incomingCallOffer);
+
+  if (callBar) {
+    callBar.classList.toggle('hidden', !hasConnectedCall);
+    callBar.classList.toggle('connected', hasConnectedCall);
+    callBar.classList.remove('ringing');
+  }
+
+  if (hasConnectedCall) {
     const name = activeCall.peerName || (currentDialogUser ? getDisplayName(currentDialogUser) : 'Собеседник');
     if (callBarTitle) callBarTitle.textContent = name;
     if (callBarStatus) {
-      callBarStatus.textContent = activeCall.status || 'Подключение…';
-      callBarStatus.classList.toggle('call-dots', !activeCall.startedAt);
+      callBarStatus.textContent = activeCall.status || 'Звонок активен';
+      callBarStatus.classList.toggle('call-dots', false);
     }
     if (callBarAvatar) callBarAvatar.src = getCallPeerAvatar();
     if (callBarTimer) callBarTimer.classList.toggle('hidden', !activeCall.startedAt);
-    callBar?.classList.toggle('connected', !!activeCall.startedAt);
     if (muteCallBtn) {
       muteCallBtn.classList.toggle('muted', !!activeCall.isMuted);
       muteCallBtn.innerHTML = activeCall.isMuted ? `<span class="call-control-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M4.7 3.3a1 1 0 0 0-1.4 1.4l5.76 5.76A4.1 4.1 0 0 0 9 11v1a3 3 0 0 0 4.63 2.52l1.44 1.44A5.05 5.05 0 0 1 12 17a5 5 0 0 1-5-5 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V21H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.08c1.32-.19 2.52-.75 3.48-1.58l2.82 2.82a1 1 0 0 0 1.4-1.4Zm10.2 8.7a3 3 0 0 1-.38 1.46l1.48 1.48c.57-.88.9-1.93.9-3.04a1 1 0 1 1 2 0 7 7 0 0 1-.98 3.6l-1.55-1.55A1 1 0 0 0 14.9 12ZM12 4a3 3 0 0 1 3 3v3.17l-6-6V7c0-.22.02-.43.07-.64A2.98 2.98 0 0 1 12 4Z"/></svg></span>` : `<span class="call-control-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 0 0 10 0Z"/></svg></span>`;
     }
+    renderCallModalState('');
   } else {
-    callBar?.classList.add('hidden');
-    callBar?.classList.remove('connected');
-    if (callBarStatus) callBarStatus.classList.remove('call-dots');
     stopCallTimer();
+    if (hasOutgoingPending) {
+      if (incomingCallName) incomingCallName.textContent = activeCall.peerName || 'Собеседник';
+      if (incomingCallAvatar) incomingCallAvatar.src = getCallPeerAvatar();
+      if (incomingCallSubtitle) {
+        incomingCallSubtitle.textContent = activeCall.status || 'Идёт звонок';
+        incomingCallSubtitle.classList.add('call-dots');
+      }
+      renderCallModalState('outgoing');
+    } else if (hasIncomingPending) {
+      if (incomingCallName) incomingCallName.textContent = incomingCallOffer.callerName || 'Пользователь';
+      if (incomingCallAvatar) incomingCallAvatar.src = incomingCallOffer.callerPhoto || DEFAULT_AVATAR;
+      if (incomingCallSubtitle) {
+        incomingCallSubtitle.textContent = 'Входящий аудиозвонок';
+        incomingCallSubtitle.classList.add('call-dots');
+      }
+      renderCallModalState('incoming');
+    } else {
+      renderCallModalState('');
+    }
   }
 }
+
 
 
 function closeIncomingCallModal() {
@@ -340,14 +373,14 @@ async function cleanupCall(reason = '', notifyRemote = false) {
   const audio = ensureRemoteAudioElement();
   audio.srcObject = null;
   if (notifyRemote && socket && currentUser && previous?.peerId) {
-    socket.emit('call:end', { fromUserId: currentUser.id, toUserId: previous.peerId, reason: reason || 'ended' });
+    socket.emit('call:end', { fromUserId: currentUser.id, toUserId: previous.peerId, reason: reason || 'ended', callId: previous.callId || '' });
   }
   updateCallUi();
 }
 
 async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
   await loadCallConfig();
-  const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS, iceCandidatePoolSize: 10 });
   const stream = localCallStream || await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
@@ -375,14 +408,14 @@ async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
   };
   pc.onicecandidate = (event) => {
     if (!event.candidate || !socket || !currentUser) return;
-    socket.emit('call:ice-candidate', { fromUserId: currentUser.id, toUserId: peerId, candidate: event.candidate });
+    socket.emit('call:ice-candidate', { fromUserId: currentUser.id, toUserId: peerId, candidate: event.candidate, callId: activeCall?.callId || '' });
   };
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
     if (state === 'connected') { setCallStatus('Звонок активен'); stopCallTone(); }
     else if (state === 'connecting') setCallStatus(isInitiator ? 'Идёт звонок' : 'Подключение…');
-    else if (state === 'failed') cleanupCall('connection_failed', false);
-    else if (state === 'disconnected') setCallStatus('Переподключение…');
+    else if (state === 'failed') { if (pc.restartIce) { try { pc.restartIce(); } catch {} setCallStatus('Переподключение…'); } else cleanupCall('connection_failed', false); }
+    else if (state === 'disconnected') { if (pc.restartIce) { try { pc.restartIce(); } catch {} } setCallStatus('Переподключение…'); }
     else if (state === 'closed') cleanupCall('connection_closed', false);
   };
   pc.oniceconnectionstatechange = () => {
@@ -427,7 +460,8 @@ async function startAudioCall() {
       toUserId: peerId,
       callerName: currentUser.name,
       callerPhoto: currentUser.photo || '',
-      offer
+      offer,
+      callId: activeCall?.callId || callId
     });
   } catch (error) {
     await cleanupCall('', false);
@@ -447,7 +481,7 @@ async function acceptIncomingCall() {
     await flushPendingIceCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    socket.emit('call:answer', { fromUserId: currentUser.id, toUserId: payload.fromUserId, answer });
+    socket.emit('call:answer', { fromUserId: currentUser.id, toUserId: payload.fromUserId, answer, callId: payload.callId || activeCall?.callId || '' });
     incomingCallOffer = null;
   } catch (error) {
     socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer?.fromUserId, reason: 'error' });
@@ -457,10 +491,18 @@ async function acceptIncomingCall() {
 }
 
 function rejectIncomingCall() {
-  if (!incomingCallOffer || !socket || !currentUser) return closeIncomingCallModal();
-  stopCallTone();
-  socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer.fromUserId, reason: 'declined' });
-  incomingCallOffer = null;
+  if (incomingCallOffer && socket && currentUser) {
+    stopCallTone();
+    socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer.fromUserId, reason: 'declined', callId: incomingCallOffer.callId || '' });
+    incomingCallOffer = null;
+    closeIncomingCallModal();
+    return;
+  }
+  if (activeCall && activeCall.isInitiator && socket && currentUser) {
+    socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: activeCall.peerId, reason: 'cancelled', callId: activeCall.callId || '' });
+    cleanupCall('', false);
+    return;
+  }
   closeIncomingCallModal();
 }
 
@@ -475,6 +517,7 @@ async function handleCallOffer(payload = {}) {
 
 async function handleCallAnswer(payload = {}) {
   if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (activeCall.callId && payload.callId && String(payload.callId) !== String(activeCall.callId)) return;
   await activeCall.peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
   await flushPendingIceCandidates();
   setCallStatus('Соединение устанавливается…');
@@ -482,6 +525,7 @@ async function handleCallAnswer(payload = {}) {
 
 async function handleCallIceCandidate(payload = {}) {
   if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (activeCall.callId && payload.callId && String(payload.callId) !== String(activeCall.callId)) return;
   if (!payload.candidate) return;
   if (!activeCall.peerConnection.remoteDescription) {
     activeCall.pendingCandidates = activeCall.pendingCandidates || [];
@@ -504,6 +548,7 @@ function handleCallRejected(payload = {}) {
 
 function handleCallEnded(payload = {}) {
   if (!activeCall || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (activeCall.callId && payload.callId && String(payload.callId) !== String(activeCall.callId)) return;
   cleanupCall('', false);
 }
 
@@ -2184,6 +2229,16 @@ function createMessageNode(message) {
   content.textContent = message.deletedAt ? 'Сообщение удалено' : (message.text || '');
 
   const replyPreviewNode = !message.deletedAt ? createReplyPreviewNode(message) : null;
+
+  if (message.attachmentType === 'call_event') {
+    const service = document.createElement('div');
+    service.className = 'call-event-message';
+    service.textContent = message.text || 'Аудиозвонок';
+    node.classList.add('call-event-row');
+    node.appendChild(service);
+    node.appendChild(meta);
+    return node;
+  }
 
   const attachmentUrl = message.attachmentUrl ? resolveAssetUrl(message.attachmentUrl) : '';
   let mediaNode = null;
