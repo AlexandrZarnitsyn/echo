@@ -71,7 +71,7 @@
               <div class="header-subtitle" id="dialogSubtitle">Личные сообщения в реальном времени</div>
             </div>
             <div class="chat-header-actions">
-              <button class="ghost-btn hidden" id="audioCallBtn" type="button" title="Аудиозвонок">Позвонить</button>
+              <button class="ghost-btn icon-call-btn hidden" id="audioCallBtn" type="button" title="Аудиозвонок" aria-label="Аудиозвонок"><span class="call-btn-icon">📞</span></button>
               <button class="ghost-btn hidden" id="addGroupMembersBtn" type="button">Добавить людей</button>
             </div>
           </div>
@@ -321,7 +321,7 @@
         <img class="call-modal-avatar" id="incomingCallAvatar" alt="caller" />
       </div>
       <div class="call-modal-name" id="incomingCallName">Пользователь</div>
-      <div class="call-modal-subtitle">Аудиозвонок</div>
+      <div class="call-modal-subtitle" id="incomingCallSubtitle">Аудиозвонок</div>
       <div class="modal-footer">
         <div class="modal-actions call-modal-actions">
           <button class="ghost-btn" id="declineCallBtn" type="button">Отклонить</button>
@@ -332,13 +332,21 @@
   </div>
 
   <div class="call-bar hidden" id="callBar">
-    <div class="call-bar-info">
-      <div class="call-bar-title" id="callBarTitle">Звонок</div>
-      <div class="call-bar-status" id="callBarStatus">Подключение…</div>
-    </div>
-    <div class="call-bar-actions">
-      <button class="ghost-btn" id="muteCallBtn" type="button">Микрофон</button>
-      <button class="primary-btn call-end-btn" id="endCallBtn" type="button">Завершить</button>
+    <div class="call-bar-card">
+      <div class="call-bar-avatar-wrap">
+        <span class="call-bar-pulse pulse-1"></span>
+        <span class="call-bar-pulse pulse-2"></span>
+        <img class="call-bar-avatar" id="callBarAvatar" alt="call avatar" />
+      </div>
+      <div class="call-bar-info">
+        <div class="call-bar-title" id="callBarTitle">Звонок</div>
+        <div class="call-bar-status" id="callBarStatus">Подключение…</div>
+        <div class="call-bar-timer hidden" id="callBarTimer">00:00</div>
+      </div>
+      <div class="call-bar-actions">
+        <button class="ghost-btn call-control-btn" id="muteCallBtn" type="button" aria-label="Микрофон">🎙️</button>
+        <button class="primary-btn call-end-btn" id="endCallBtn" type="button" aria-label="Завершить звонок">✕</button>
+      </div>
     </div>
   </div>
 

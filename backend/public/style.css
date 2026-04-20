@@ -2958,3 +2958,31 @@ body.light-theme .message-reply-trigger {
 .call-end-btn { background: #ef4444; }
 .call-end-btn:hover { background: #dc2626; }
 @media (max-width: 900px) { .call-bar { top: auto; bottom: 16px; } }
+
+.icon-call-btn { min-width: 46px; width: 46px; height: 46px; padding: 0; display:flex; align-items:center; justify-content:center; border-radius: 14px; }
+.call-btn-icon { font-size: 20px; line-height: 1; }
+.call-modal-card { max-width: 380px; text-align: center; overflow: hidden; }
+.call-modal-card::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at top, rgba(34,211,238,.14), transparent 42%), radial-gradient(circle at bottom, rgba(59,130,246,.14), transparent 48%); pointer-events:none; }
+.call-modal-card > * { position: relative; z-index: 1; }
+.call-modal-avatar-wrap { position: relative; }
+.call-modal-avatar-wrap::before, .call-modal-avatar-wrap::after { content: ""; position: absolute; inset: 50% auto auto 50%; width: 96px; height: 96px; border-radius: 50%; transform: translate(-50%, -50%); border: 1px solid rgba(45,212,191,.45); animation: callPulse 1.8s infinite; }
+.call-modal-avatar-wrap::after { animation-delay: .9s; }
+.call-modal-name { text-shadow: 0 8px 30px rgba(34,211,238,.15); }
+.call-modal-subtitle { color: #67e8f9; margin-bottom: 8px; min-height: 22px; }
+.call-modal-subtitle.call-dots::after, .call-bar-status.call-dots::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: dotsSteps 1.3s infinite steps(4); }
+@keyframes dotsSteps { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } 100% { content: ""; } }
+.call-bar { position: fixed; inset: 0; z-index: 1300; display: flex; align-items: center; justify-content: center; background: rgba(2, 8, 23, 0.72); backdrop-filter: blur(10px); padding: 24px; }
+.call-bar-card { width: min(420px, calc(100vw - 32px)); border-radius: 28px; background: linear-gradient(180deg, rgba(5,13,34,.98), rgba(7,18,46,.96)); border: 1px solid rgba(96,165,250,.22); box-shadow: 0 30px 80px rgba(2,6,23,.48); padding: 28px 22px 22px; display:flex; flex-direction:column; align-items:center; text-align:center; }
+.call-bar-avatar-wrap { position: relative; width: 112px; height: 112px; display:flex; align-items:center; justify-content:center; margin-bottom: 18px; }
+.call-bar-avatar { width: 92px; height: 92px; border-radius: 50%; object-fit: cover; border: 3px solid rgba(45,212,191,.45); position: relative; z-index: 2; box-shadow: 0 16px 40px rgba(34,211,238,.18); }
+.call-bar-pulse { position: absolute; width: 112px; height: 112px; border-radius: 50%; border: 1px solid rgba(45,212,191,.35); animation: callPulse 2s infinite; }
+.call-bar-pulse.pulse-2 { animation-delay: 1s; }
+@keyframes callPulse { 0% { transform: scale(.8); opacity: .8; } 100% { transform: scale(1.35); opacity: 0; } }
+.call-bar-info { min-width: 0; }
+.call-bar-title { font-size: 28px; font-weight: 800; color: #eff6ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.call-bar-status { font-size: 15px; color: #67e8f9; margin-top: 6px; min-height: 22px; }
+.call-bar-timer { margin-top: 10px; font-size: 26px; font-weight: 800; letter-spacing: .06em; color: #f8fafc; }
+.call-bar-actions { display:flex; gap: 12px; align-items:center; justify-content:center; margin-top: 22px; width: 100%; }
+.call-control-btn { min-width: 56px; width: 56px; height: 56px; padding: 0; display:flex; align-items:center; justify-content:center; border-radius: 18px; font-size: 22px; }
+.call-end-btn { min-width: 110px; height: 56px; border-radius: 18px; font-size: 18px; font-weight: 800; }
+@media (max-width: 900px) { .call-bar-card { width: min(420px, calc(100vw - 20px)); } .call-bar-title { font-size: 24px; } }

@@ -115,6 +115,9 @@ const callBarTitle = document.getElementById('callBarTitle');
 const callBarStatus = document.getElementById('callBarStatus');
 const muteCallBtn = document.getElementById('muteCallBtn');
 const endCallBtn = document.getElementById('endCallBtn');
+const incomingCallSubtitle = document.getElementById('incomingCallSubtitle');
+const callBarAvatar = document.getElementById('callBarAvatar');
+const callBarTimer = document.getElementById('callBarTimer');
 const contactSuggestAvatarBtn = document.getElementById('contactSuggestAvatarBtn');
 const avatarSuggestionInput = document.getElementById('avatarSuggestionInput');
 
@@ -135,7 +138,7 @@ const replyComposerText = document.getElementById('replyComposerText');
 const replyComposerClose = document.getElementById('replyComposerClose');
 
 function isCompactMobileLayout() {
-  return window.innerWidth <= 900 || window.matchMedia('(pointer: coarse)').matches;
+  return window.innerWidth <= 900;
 }
 
 function syncResponsiveLayout() {
@@ -158,6 +161,87 @@ function ensureRemoteAudioElement() {
   return remoteCallAudio;
 }
 
+
+let callTimerInterval = null;
+let callToneCtx = null;
+let callToneTimeout = null;
+
+function formatCallDuration(totalSeconds = 0) {
+  const secs = Math.max(0, Math.floor(totalSeconds));
+  const mm = String(Math.floor(secs / 60)).padStart(2, '0');
+  const ss = String(secs % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+function stopCallTimer() {
+  if (callTimerInterval) clearInterval(callTimerInterval);
+  callTimerInterval = null;
+  if (callBarTimer) {
+    callBarTimer.textContent = '00:00';
+    callBarTimer.classList.add('hidden');
+  }
+}
+
+function startCallTimer() {
+  if (!activeCall) return;
+  if (!activeCall.startedAt) activeCall.startedAt = Date.now();
+  stopCallTimer();
+  const tick = () => {
+    if (!activeCall?.startedAt) return;
+    if (callBarTimer) {
+      callBarTimer.classList.remove('hidden');
+      callBarTimer.textContent = formatCallDuration((Date.now() - activeCall.startedAt) / 1000);
+    }
+  };
+  tick();
+  callTimerInterval = setInterval(tick, 1000);
+}
+
+function stopCallTone() {
+  if (callToneTimeout) clearTimeout(callToneTimeout);
+  callToneTimeout = null;
+  if (callToneCtx) {
+    try { callToneCtx.close(); } catch {}
+  }
+  callToneCtx = null;
+}
+
+function playToneBurst(kind = 'outgoing') {
+  try {
+    stopCallTone();
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    callToneCtx = ctx;
+    const now = ctx.currentTime;
+    const pattern = kind === 'incoming'
+      ? [{ f: 740, at: 0, d: 0.17 }, { f: 988, at: 0.22, d: 0.17 }]
+      : [{ f: 620, at: 0, d: 0.18 }, { f: 620, at: 0.48, d: 0.18 }];
+    pattern.forEach((step) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = step.f;
+      gain.gain.setValueAtTime(0.0001, now + step.at);
+      gain.gain.exponentialRampToValueAtTime(0.06, now + step.at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + step.at + step.d);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + step.at);
+      osc.stop(now + step.at + step.d + 0.03);
+    });
+    callToneTimeout = setTimeout(() => {
+      if (activeCall || incomingCallOffer) playToneBurst(kind);
+    }, kind === 'incoming' ? 1800 : 2100);
+  } catch {}
+}
+
+function getCallPeerAvatar() {
+  if (activeCall?.peerPhoto) return activeCall.peerPhoto;
+  if (incomingCallOffer?.callerPhoto) return incomingCallOffer.callerPhoto;
+  if (currentDialogUser) return getAvatar(currentDialogUser) || DEFAULT_AVATAR;
+  return DEFAULT_AVATAR;
+}
+
 function updateCallUi() {
   const canCall = Boolean(currentUser && isPersonalDialogOpen() && currentDialogState.canMessage);
   audioCallBtn?.classList.toggle('hidden', !canCall);
@@ -165,27 +249,39 @@ function updateCallUi() {
     callBar?.classList.remove('hidden');
     const name = activeCall.peerName || (currentDialogUser ? getDisplayName(currentDialogUser) : 'Собеседник');
     if (callBarTitle) callBarTitle.textContent = name;
-    if (callBarStatus) callBarStatus.textContent = activeCall.status || 'Подключение…';
-    if (muteCallBtn) muteCallBtn.textContent = activeCall.isMuted ? 'Микрофон выкл' : 'Микрофон';
+    if (callBarStatus) {
+      callBarStatus.textContent = activeCall.status || 'Подключение…';
+      callBarStatus.classList.toggle('call-dots', !activeCall.startedAt);
+    }
+    if (callBarAvatar) callBarAvatar.src = getCallPeerAvatar();
+    if (callBarTimer) callBarTimer.classList.toggle('hidden', !activeCall.startedAt);
+    if (muteCallBtn) muteCallBtn.textContent = activeCall.isMuted ? '🔇' : '🎙️';
   } else {
     callBar?.classList.add('hidden');
+    if (callBarStatus) callBarStatus.classList.remove('call-dots');
+    stopCallTimer();
   }
 }
 
+
 function closeIncomingCallModal() {
   incomingCallModal?.classList.add('hidden');
+  incomingCallSubtitle?.classList.remove('call-dots');
 }
 
 function openIncomingCallModal(payload = {}) {
   incomingCallOffer = payload;
   if (incomingCallName) incomingCallName.textContent = payload.callerName || 'Пользователь';
   if (incomingCallAvatar) incomingCallAvatar.src = payload.callerPhoto || DEFAULT_AVATAR;
+  if (incomingCallSubtitle) { incomingCallSubtitle.textContent = 'Аудиозвонок'; incomingCallSubtitle.classList.add('call-dots'); }
   incomingCallModal?.classList.remove('hidden');
+  playToneBurst('incoming');
 }
 
 function setCallStatus(status) {
   if (activeCall) {
     activeCall.status = status;
+    if (/активен/i.test(status) && !activeCall.startedAt) { activeCall.startedAt = Date.now(); startCallTimer(); stopCallTone(); }
     updateCallUi();
   }
 }
@@ -194,6 +290,8 @@ async function cleanupCall(reason = '', notifyRemote = false) {
   const previous = activeCall;
   activeCall = null;
   incomingCallOffer = null;
+  stopCallTone();
+  stopCallTimer();
   closeIncomingCallModal();
   try {
     previous?.peerConnection?.getSenders?.().forEach((sender) => { try { sender.track && sender.track.stop(); } catch {} });
@@ -228,11 +326,11 @@ async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
   };
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
-    if (state === 'connected') setCallStatus('Звонок активен');
+    if (state === 'connected') { setCallStatus('Звонок активен'); stopCallTone(); }
     else if (state === 'connecting') setCallStatus('Подключение…');
     else if (state === 'failed' || state === 'disconnected' || state === 'closed') cleanupCall('connection_closed', false);
   };
-  activeCall = { peerId: String(peerId), peerName: peerName || '', peerConnection: pc, status: isInitiator ? 'Звоним…' : 'Подключение…', isMuted: false };
+  activeCall = { peerId: String(peerId), peerName: peerName || '', peerPhoto: (currentDialogUser && String(currentDialogUser.id) === String(peerId)) ? (getAvatar(currentDialogUser) || DEFAULT_AVATAR) : DEFAULT_AVATAR, peerConnection: pc, status: isInitiator ? 'Идёт звонок' : 'Подключение', isMuted: false, startedAt: null };
   updateCallUi();
   return pc;
 }
@@ -245,6 +343,7 @@ async function startAudioCall() {
     const pc = await createCallPeerConnection(peerId, peerName, true);
     const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
     await pc.setLocalDescription(offer);
+    playToneBurst('outgoing');
     socket.emit('call:offer', {
       fromUserId: currentUser.id,
       toUserId: peerId,
@@ -262,6 +361,7 @@ async function acceptIncomingCall() {
   if (!incomingCallOffer || !socket || !currentUser) return;
   try {
     const payload = incomingCallOffer;
+    stopCallTone();
     closeIncomingCallModal();
     const pc = await createCallPeerConnection(payload.fromUserId, payload.callerName || '', false);
     await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
@@ -278,6 +378,7 @@ async function acceptIncomingCall() {
 
 function rejectIncomingCall() {
   if (!incomingCallOffer || !socket || !currentUser) return closeIncomingCallModal();
+  stopCallTone();
   socket.emit('call:reject', { fromUserId: currentUser.id, toUserId: incomingCallOffer.fromUserId, reason: 'declined' });
   incomingCallOffer = null;
   closeIncomingCallModal();
@@ -295,7 +396,7 @@ async function handleCallOffer(payload = {}) {
 async function handleCallAnswer(payload = {}) {
   if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
   await activeCall.peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
-  setCallStatus('Подключение…');
+  setCallStatus('Соединение устанавливается');
 }
 
 async function handleCallIceCandidate(payload = {}) {
