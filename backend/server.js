@@ -59,6 +59,7 @@ function getCallIceServers() {
 }
 
 const CALL_ICE_SERVERS = getCallIceServers();
+const CALL_FORCE_RELAY = String(process.env.WEBRTC_FORCE_RELAY || '').trim().toLowerCase() === 'true';
 
 const server = http.createServer(app);
 
@@ -2225,7 +2226,11 @@ io.on('connection', (socket) => {
 
 
 app.get('/api/webrtc/config', (_req, res) => {
-  res.json({ iceServers: CALL_ICE_SERVERS });
+  const hasTurn = CALL_ICE_SERVERS.some((server) => {
+    const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
+    return urls.some((url) => String(url || '').startsWith('turn:') || String(url || '').startsWith('turns:'));
+  });
+  res.json({ iceServers: CALL_ICE_SERVERS, hasTurn, forceRelay: CALL_FORCE_RELAY && hasTurn });
 });
 
 app.get('/api/dialogs/bootstrap', async (req, res) => {

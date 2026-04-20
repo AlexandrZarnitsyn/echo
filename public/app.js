@@ -116,6 +116,11 @@ const callBarStatus = document.getElementById('callBarStatus');
 const muteCallBtn = document.getElementById('muteCallBtn');
 const endCallBtn = document.getElementById('endCallBtn');
 const incomingCallSubtitle = document.getElementById('incomingCallSubtitle');
+const outgoingCallModal = document.getElementById('outgoingCallModal');
+const outgoingCallAvatar = document.getElementById('outgoingCallAvatar');
+const outgoingCallName = document.getElementById('outgoingCallName');
+const outgoingCallSubtitle = document.getElementById('outgoingCallSubtitle');
+const cancelOutgoingCallBtn = document.getElementById('cancelOutgoingCallBtn');
 const callBarAvatar = document.getElementById('callBarAvatar');
 const callBarTimer = document.getElementById('callBarTimer');
 const contactSuggestAvatarBtn = document.getElementById('contactSuggestAvatarBtn');
@@ -271,7 +276,6 @@ function updateCallUi() {
   const canCall = Boolean(currentUser && isPersonalDialogOpen() && currentDialogState.canMessage);
   audioCallBtn?.classList.toggle('hidden', !canCall);
   if (activeCall) {
-    callBar?.classList.remove('hidden');
     const name = activeCall.peerName || (currentDialogUser ? getDisplayName(currentDialogUser) : 'Собеседник');
     if (callBarTitle) callBarTitle.textContent = name;
     if (callBarStatus) {
@@ -285,7 +289,15 @@ function updateCallUi() {
       muteCallBtn.classList.toggle('muted', !!activeCall.isMuted);
       muteCallBtn.innerHTML = activeCall.isMuted ? `<span class="call-control-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M4.7 3.3a1 1 0 0 0-1.4 1.4l5.76 5.76A4.1 4.1 0 0 0 9 11v1a3 3 0 0 0 4.63 2.52l1.44 1.44A5.05 5.05 0 0 1 12 17a5 5 0 0 1-5-5 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V21H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.08c1.32-.19 2.52-.75 3.48-1.58l2.82 2.82a1 1 0 0 0 1.4-1.4Zm10.2 8.7a3 3 0 0 1-.38 1.46l1.48 1.48c.57-.88.9-1.93.9-3.04a1 1 0 1 1 2 0 7 7 0 0 1-.98 3.6l-1.55-1.55A1 1 0 0 0 14.9 12ZM12 4a3 3 0 0 1 3 3v3.17l-6-6V7c0-.22.02-.43.07-.64A2.98 2.98 0 0 1 12 4Z"/></svg></span>` : `<span class="call-control-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 15a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 0 0 10 0Z"/></svg></span>`;
     }
+    if (activeCall.startedAt) {
+      closeOutgoingCallModal();
+      callBar?.classList.remove('hidden');
+    } else {
+      callBar?.classList.add('hidden');
+      openOutgoingCallModal();
+    }
   } else {
+    closeOutgoingCallModal();
     callBar?.classList.add('hidden');
     callBar?.classList.remove('connected');
     if (callBarStatus) callBarStatus.classList.remove('call-dots');
@@ -297,6 +309,22 @@ function updateCallUi() {
 function closeIncomingCallModal() {
   incomingCallModal?.classList.add('hidden');
   incomingCallSubtitle?.classList.remove('call-dots');
+}
+
+function closeOutgoingCallModal() {
+  outgoingCallModal?.classList.add('hidden');
+  outgoingCallSubtitle?.classList.remove('call-dots');
+}
+
+function openOutgoingCallModal() {
+  if (!activeCall) return;
+  if (outgoingCallName) outgoingCallName.textContent = activeCall.peerName || 'Собеседник';
+  if (outgoingCallAvatar) outgoingCallAvatar.src = activeCall.peerPhoto || DEFAULT_AVATAR;
+  if (outgoingCallSubtitle) {
+    outgoingCallSubtitle.textContent = activeCall.status || 'Идёт звонок';
+    outgoingCallSubtitle.classList.toggle('call-dots', !activeCall.startedAt);
+  }
+  outgoingCallModal?.classList.remove('hidden');
 }
 
 function openIncomingCallModal(payload = {}) {
@@ -316,6 +344,7 @@ function setCallStatus(status) {
       activeCall.startedAt = Date.now();
       startCallTimer();
       stopCallTone();
+      closeOutgoingCallModal();
       tryPlayRemoteAudio();
     }
     updateCallUi();
@@ -329,6 +358,7 @@ async function cleanupCall(reason = '', notifyRemote = false) {
   stopCallTone();
   stopCallTimer();
   closeIncomingCallModal();
+  closeOutgoingCallModal();
   try {
     previous?.peerConnection?.getSenders?.().forEach((sender) => { try { sender.track && sender.track.stop(); } catch {} });
     previous?.peerConnection?.close?.();
@@ -347,12 +377,22 @@ async function cleanupCall(reason = '', notifyRemote = false) {
 
 async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
   await loadCallConfig();
-  const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS });
+  const transportPolicy = CALL_FORCE_RELAY && CALL_ICE_SERVERS.some((server) => String(server?.urls || '').includes('turn:')) ? 'relay' : 'all';
+  const pc = new RTCPeerConnection({
+    iceServers: CALL_ICE_SERVERS,
+    iceCandidatePoolSize: 6,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
+    iceTransportPolicy: transportPolicy
+  });
   const stream = localCallStream || await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
-      autoGainControl: true
+      autoGainControl: true,
+      channelCount: 1,
+      sampleRate: 48000,
+      sampleSize: 16
     },
     video: false
   });
@@ -716,6 +756,7 @@ let incomingCallOffer = null;
 let localCallStream = null;
 let remoteCallAudio = null;
 let CALL_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+let CALL_FORCE_RELAY = false;
 
 
 const DIALOG_ALIASES_KEY = (userId) => `messengerAliases:${userId}`;
@@ -731,6 +772,7 @@ async function loadCallConfig() {
     if (Array.isArray(payload?.iceServers) && payload.iceServers.length) {
       CALL_ICE_SERVERS = payload.iceServers;
     }
+    CALL_FORCE_RELAY = !!payload?.forceRelay;
   } catch (error) {
     console.warn('Failed to load call config, using default STUN only', error);
   }
@@ -3596,6 +3638,7 @@ function initializeApp() {
 audioCallBtn?.addEventListener('click', startAudioCall);
 acceptCallBtn?.addEventListener('click', acceptIncomingCall);
 declineCallBtn?.addEventListener('click', rejectIncomingCall);
+cancelOutgoingCallBtn?.addEventListener('click', () => cleanupCall('cancelled', true));
 endCallBtn?.addEventListener('click', () => cleanupCall('ended', true));
 muteCallBtn?.addEventListener('click', toggleMuteCall);
 window.addEventListener('beforeunload', () => { if (activeCall) cleanupCall('ended', true); });
@@ -3616,6 +3659,7 @@ if (document.readyState === 'loading') {
 audioCallBtn?.addEventListener('click', startAudioCall);
 acceptCallBtn?.addEventListener('click', acceptIncomingCall);
 declineCallBtn?.addEventListener('click', rejectIncomingCall);
+cancelOutgoingCallBtn?.addEventListener('click', () => cleanupCall('cancelled', true));
 endCallBtn?.addEventListener('click', () => cleanupCall('ended', true));
 muteCallBtn?.addEventListener('click', toggleMuteCall);
 window.addEventListener('beforeunload', () => { if (activeCall) cleanupCall('ended', true); });
