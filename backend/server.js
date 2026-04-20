@@ -913,26 +913,6 @@ async function broadcastMessageEvent(eventName, message) {
   io.to(`user:${message.senderId}`).to(`user:${message.recipientId}`).emit(eventName, message);
 }
 
-
-async function insertCallEventMessage(senderId, recipientId, text, status = 'info', callId = '') {
-  const sender = await getUserById(senderId);
-  const recipient = await getUserById(recipientId);
-  if (!sender || !recipient) return null;
-  const messageId = crypto.randomUUID();
-  const dialogId = makeDialogId(sender.id, recipient.id);
-  const deliveredAt = onlineUsers.has(String(recipient.id)) ? new Date().toISOString() : null;
-  await query(
-    `INSERT INTO messages (
-      id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, group_id, media_id, client_message_id, reply_to_message_id
-    ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, '', 'call_event', $7, NULL, NULL, NULL, NULL)`,
-    [messageId, dialogId, String(text || 'Аудиозвонок'), String(sender.id), String(recipient.id), deliveredAt, callId ? `${status}:${callId}` : String(status || 'info')]
-  );
-  const message = await getFullMessageById(messageId);
-  await broadcastMessageEvent('private-message', message);
-  invalidateDialogsBootstrapCache([String(sender.id), String(recipient.id)]);
-  return message;
-}
-
 function emitTypingEvent(eventName, { senderId, recipientId = '', groupId = '', dialogId = '', userName = '' } = {}) {
   const payload = {
     userId: senderId ? String(senderId) : '',
