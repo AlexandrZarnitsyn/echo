@@ -49,6 +49,7 @@
               <div class="current-user-meta">
                 <div class="header-title">Диалоги</div>
                 <div class="header-subtitle" id="currentUserText"></div>
+              </div>
             </div>
           </div>
 
@@ -91,7 +92,6 @@
             <div class="composer-row" id="composerTextRow">
               <button class="attach-btn" id="messageAttachBtn" type="button" title="Прикрепить файл" aria-label="Прикрепить файл">+</button>
               <button class="attach-btn" id="voiceRecordBtn" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение"></button>
-              <button class="attach-btn mobile-video-note-btn" id="videoNoteBtn" type="button" title="Записать кружок" aria-label="Записать кружок"></button>
               <input id="messageInput" type="text" placeholder="Введите сообщение..." />
               <button id="sendBtn" type="button">Отправить</button>
             </div>
@@ -113,21 +113,6 @@
                 </div>
               </div>
               <button class="primary-btn voice-send-btn" id="sendVoiceRecordingBtn" type="button">Отправить</button>
-            </div>
-            <div class="composer-row composer-row-video-note hidden" id="videoNoteRecordingPanel">
-              <button class="voice-cancel-btn" id="cancelVideoNoteBtn" type="button" aria-label="Отменить запись кружка" title="Отменить запись кружка">×</button>
-              <div class="video-note-recording-shell">
-                <div class="video-note-preview-wrap">
-                  <video id="videoNotePreview" class="video-note-preview" autoplay muted playsinline></video>
-                  <div class="video-note-preview-ring"></div>
-                </div>
-                <div class="video-note-recording-info">
-                  <div class="video-note-recording-title">Идёт запись кружка</div>
-                  <div class="video-note-recording-subtitle">Только для телефона</div>
-                </div>
-                <span class="voice-recording-time" id="videoNoteRecordingTime">0:00</span>
-              </div>
-              <button class="primary-btn voice-send-btn" id="sendVideoNoteBtn" type="button">Отправить</button>
             </div>
           </div>
         </section>
