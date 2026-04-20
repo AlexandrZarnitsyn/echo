@@ -1404,14 +1404,14 @@ function bindVoiceRecordingSwipe() {
 
 async function markVoiceMessageListened(messageId) {
   if (!currentUser?.id || !messageId) return;
+  updateMessageAudioListened(messageId, true, { rerender: false });
   try {
     const response = await fetch(apiUrl(`/api/messages/${messageId}/listen`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ currentUserId: currentUser.id })
     });
-    const data = await parseApiResponse(response);
-    if (data?.message) upsertMessage(data.message);
+    await parseApiResponse(response);
   } catch (error) {
     console.error('voice listen status error', error);
   }
@@ -1592,7 +1592,7 @@ function createVoiceMessageNode(message, attachmentUrl, isMe) {
   const audio = document.createElement('audio');
   audio.className = 'voice-audio-native';
   audio.src = attachmentUrl;
-  audio.preload = 'auto';
+  audio.preload = 'metadata';
 
   const playBtn = document.createElement('button');
   playBtn.className = 'voice-play-btn';
@@ -1886,6 +1886,25 @@ function upsertMessage(message) {
   else chat.appendChild(replacement);
   scrollChatToBottom();
   renderReplyComposer();
+}
+
+function markVoiceMessageListenedInDom(messageId, listened = true) {
+  if (!messageId) return;
+  const node = chat.querySelector(`.message[data-id="${messageId}"]`);
+  if (!node) return;
+  const dot = node.querySelector('.voice-dot');
+  if (dot) dot.classList.toggle('is-unheard', !listened);
+}
+
+function updateMessageAudioListened(messageId, listened = true, { rerender = false } = {}) {
+  if (!messageId) return;
+  const index = currentDialogMessages.findIndex((item) => item.id === messageId);
+  if (index >= 0) currentDialogMessages[index] = { ...currentDialogMessages[index], audioListened: listened };
+  if (rerender && index >= 0) {
+    upsertMessage(currentDialogMessages[index]);
+  } else {
+    markVoiceMessageListenedInDom(messageId, listened);
+  }
 }
 
 function refreshMessageStatus(messageId, deliveredAt, readAt) {
@@ -2242,16 +2261,9 @@ function setupSocket() {
   });
 
   socket.on('message:audio-listened', ({ messageId, userId, message }) => {
-    if (message) {
-      upsertMessage(message);
-      return;
-    }
-    if (!messageId) return;
-    const index = currentDialogMessages.findIndex((item) => item.id === messageId);
-    if (index >= 0) {
-      currentDialogMessages[index] = { ...currentDialogMessages[index], audioListened: true };
-      upsertMessage(currentDialogMessages[index]);
-    }
+    const targetMessageId = message?.id || messageId;
+    if (!targetMessageId) return;
+    updateMessageAudioListened(targetMessageId, true, { rerender: false });
   });
 
   socket.on('message:deleted', async (message) => {
