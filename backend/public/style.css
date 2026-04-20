@@ -3124,7 +3124,7 @@ body.light-theme .message-reply-trigger {
 .icon-call-btn:hover { background: rgba(52, 63, 80, 0.98); }
 .call-btn-icon, .call-control-icon { display:inline-flex; align-items:center; justify-content:center; }
 .call-btn-icon svg, .call-control-icon svg { width: 20px; height: 20px; fill: #b8c1cf; }
-.call-bar {
+ .call-bar {
   position: fixed;
   inset: 0;
   z-index: 1300;
@@ -3147,6 +3147,9 @@ body.light-theme .message-reply-trigger {
   align-items: flex-start;
   justify-content: center;
 }
+.call-bar:not(.connected) .call-bar-card {
+  margin: 0 auto;
+}
 .call-bar-card {
   width: min(420px, calc(100vw - 32px));
   border-radius: 28px;
@@ -3154,7 +3157,10 @@ body.light-theme .message-reply-trigger {
   border: 1px solid rgba(96,165,250,.22);
   box-shadow: 0 30px 80px rgba(2,6,23,.48);
   padding: 28px 22px 22px;
-  display:flex; flex-direction:column; align-items:center; text-align:center;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  text-align:center;
 }
 .call-bar.connected .call-bar-card {
   width: 100%;
@@ -3193,6 +3199,9 @@ body.light-theme .message-reply-trigger {
 .call-bar.connected .call-end-btn::before { content: "✕"; font-size: 18px; font-weight: 800; }
 .call-bar.connected .call-end-btn { font-size: 0; }
 @media (max-width: 900px) {
+  .call-bar { padding: 18px; }
+  .call-bar:not(.connected) { align-items: center; justify-content: center; }
+  .call-bar:not(.connected) .call-bar-card { width: min(420px, calc(100vw - 20px)); }
   .call-bar.connected { width: calc(100vw - 16px); top: 10px; }
   .call-bar.connected .call-bar-card { padding: 9px 10px; gap: 10px; }
 }

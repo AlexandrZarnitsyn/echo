@@ -156,9 +156,34 @@ function ensureRemoteAudioElement() {
   remoteCallAudio = document.createElement('audio');
   remoteCallAudio.autoplay = true;
   remoteCallAudio.playsInline = true;
+  remoteCallAudio.setAttribute('playsinline', '');
+  remoteCallAudio.preload = 'auto';
   remoteCallAudio.className = 'hidden';
   document.body.appendChild(remoteCallAudio);
   return remoteCallAudio;
+}
+
+async function tryPlayRemoteAudio() {
+  const audio = ensureRemoteAudioElement();
+  try {
+    await audio.play();
+  } catch (error) {
+    console.warn('Remote audio autoplay was blocked or delayed', error);
+  }
+}
+
+async function flushPendingIceCandidates() {
+  if (!activeCall?.peerConnection || !activeCall.pendingCandidates?.length) return;
+  if (!activeCall.peerConnection.remoteDescription) return;
+  const queue = [...activeCall.pendingCandidates];
+  activeCall.pendingCandidates = [];
+  for (const candidate of queue) {
+    try {
+      await activeCall.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (error) {
+      console.warn('Deferred addIceCandidate error', error);
+    }
+  }
 }
 
 
@@ -278,7 +303,7 @@ function openIncomingCallModal(payload = {}) {
   incomingCallOffer = payload;
   if (incomingCallName) incomingCallName.textContent = payload.callerName || 'Пользователь';
   if (incomingCallAvatar) incomingCallAvatar.src = payload.callerPhoto || DEFAULT_AVATAR;
-  if (incomingCallSubtitle) { incomingCallSubtitle.textContent = 'Аудиозвонок'; incomingCallSubtitle.classList.add('call-dots'); }
+  if (incomingCallSubtitle) { incomingCallSubtitle.textContent = 'Входящий аудиозвонок'; incomingCallSubtitle.classList.add('call-dots'); }
   incomingCallModal?.classList.remove('hidden');
   playToneBurst('incoming');
 }
@@ -286,7 +311,13 @@ function openIncomingCallModal(payload = {}) {
 function setCallStatus(status) {
   if (activeCall) {
     activeCall.status = status;
-    if (/активен/i.test(status) && !activeCall.startedAt) { activeCall.startedAt = Date.now(); startCallTimer(); stopCallTone(); }
+    const isConnected = /активен/i.test(status);
+    if (isConnected && !activeCall.startedAt) {
+      activeCall.startedAt = Date.now();
+      startCallTimer();
+      stopCallTone();
+      tryPlayRemoteAudio();
+    }
     updateCallUi();
   }
 }
@@ -315,15 +346,32 @@ async function cleanupCall(reason = '', notifyRemote = false) {
 }
 
 async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
+  await loadCallConfig();
   const pc = new RTCPeerConnection({ iceServers: CALL_ICE_SERVERS });
-  const stream = localCallStream || await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  const stream = localCallStream || await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    },
+    video: false
+  });
   localCallStream = stream;
   stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+  try { pc.addTransceiver('audio', { direction: 'sendrecv' }); } catch {}
   const remoteStream = new MediaStream();
-  ensureRemoteAudioElement().srcObject = remoteStream;
+  const remoteAudio = ensureRemoteAudioElement();
+  remoteAudio.srcObject = remoteStream;
   pc.ontrack = (event) => {
-    event.streams[0]?.getTracks().forEach((track) => remoteStream.addTrack(track));
-    setCallStatus('Звонок активен');
+    const [streamFromPeer] = event.streams || [];
+    if (streamFromPeer) {
+      streamFromPeer.getTracks().forEach((track) => {
+        if (!remoteStream.getTracks().some((t) => t.id === track.id)) remoteStream.addTrack(track);
+      });
+    } else if (event.track && !remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+      remoteStream.addTrack(event.track);
+    }
+    tryPlayRemoteAudio();
   };
   pc.onicecandidate = (event) => {
     if (!event.candidate || !socket || !currentUser) return;
@@ -332,10 +380,34 @@ async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
     if (state === 'connected') { setCallStatus('Звонок активен'); stopCallTone(); }
-    else if (state === 'connecting') setCallStatus('Подключение…');
-    else if (state === 'failed' || state === 'disconnected' || state === 'closed') cleanupCall('connection_closed', false);
+    else if (state === 'connecting') setCallStatus(isInitiator ? 'Идёт звонок' : 'Подключение…');
+    else if (state === 'failed') cleanupCall('connection_failed', false);
+    else if (state === 'disconnected') setCallStatus('Переподключение…');
+    else if (state === 'closed') cleanupCall('connection_closed', false);
   };
-  activeCall = { peerId: String(peerId), peerName: peerName || '', peerPhoto: (currentDialogUser && String(currentDialogUser.id) === String(peerId)) ? (getAvatar(currentDialogUser) || DEFAULT_AVATAR) : DEFAULT_AVATAR, peerConnection: pc, status: isInitiator ? 'Идёт звонок' : 'Подключение', isMuted: false, startedAt: null };
+  pc.oniceconnectionstatechange = () => {
+    const state = pc.iceConnectionState;
+    if (state === 'connected' || state === 'completed') {
+      setCallStatus('Звонок активен');
+      stopCallTone();
+    } else if (state === 'checking') {
+      setCallStatus(isInitiator ? 'Идёт звонок' : 'Подключение…');
+    } else if (state === 'failed') {
+      cleanupCall('ice_failed', false);
+    } else if (state === 'disconnected') {
+      setCallStatus('Переподключение…');
+    }
+  };
+  activeCall = {
+    peerId: String(peerId),
+    peerName: peerName || '',
+    peerPhoto: (currentDialogUser && String(currentDialogUser.id) === String(peerId)) ? (getAvatar(currentDialogUser) || DEFAULT_AVATAR) : DEFAULT_AVATAR,
+    peerConnection: pc,
+    status: isInitiator ? 'Идёт звонок' : 'Подключение…',
+    isMuted: false,
+    startedAt: null,
+    pendingCandidates: []
+  };
   updateCallUi();
   return pc;
 }
@@ -343,6 +415,7 @@ async function createCallPeerConnection(peerId, peerName, isInitiator = false) {
 async function startAudioCall() {
   if (!socket || !currentUser || !isPersonalDialogOpen() || activeCall) return;
   try {
+    await loadCallConfig();
     const peerId = String(currentDialogUser.id);
     const peerName = getDisplayName(currentDialogUser);
     const pc = await createCallPeerConnection(peerId, peerName, true);
@@ -365,11 +438,13 @@ async function startAudioCall() {
 async function acceptIncomingCall() {
   if (!incomingCallOffer || !socket || !currentUser) return;
   try {
+    await loadCallConfig();
     const payload = incomingCallOffer;
     stopCallTone();
     closeIncomingCallModal();
     const pc = await createCallPeerConnection(payload.fromUserId, payload.callerName || '', false);
     await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
+    await flushPendingIceCandidates();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     socket.emit('call:answer', { fromUserId: currentUser.id, toUserId: payload.fromUserId, answer });
@@ -401,11 +476,18 @@ async function handleCallOffer(payload = {}) {
 async function handleCallAnswer(payload = {}) {
   if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
   await activeCall.peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
-  setCallStatus('Соединение устанавливается');
+  await flushPendingIceCandidates();
+  setCallStatus('Соединение устанавливается…');
 }
 
 async function handleCallIceCandidate(payload = {}) {
   if (!activeCall?.peerConnection || String(payload.fromUserId || '') !== String(activeCall.peerId || '')) return;
+  if (!payload.candidate) return;
+  if (!activeCall.peerConnection.remoteDescription) {
+    activeCall.pendingCandidates = activeCall.pendingCandidates || [];
+    activeCall.pendingCandidates.push(payload.candidate);
+    return;
+  }
   try {
     await activeCall.peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
   } catch (error) {
