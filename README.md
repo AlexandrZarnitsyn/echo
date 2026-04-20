@@ -33,3 +33,9 @@ window.APP_CONFIG = {
 ## Persistent avatars on Railway
 
 To keep uploaded avatars after redeploys, mount a Railway volume to your backend service and set `UPLOADS_DIR=/data/uploads` (or any mounted path). Without a persistent uploads directory, files inside the container can be lost on redeploy.
+
+
+## Вторая база данных
+
+Можно подключить вторую PostgreSQL базу через переменную `SECONDARY_DATABASE_URL`.
+В этой сборке основная БД остаётся источником правды, а вторая БД используется для хранения бинарных данных медиа, если переменная задана.

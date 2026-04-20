@@ -14,6 +14,7 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 const DATABASE_URL = process.env.DATABASE_URL;
+const SECONDARY_DATABASE_URL = process.env.SECONDARY_DATABASE_URL || '';
 const UPLOADS_DIR = process.env.UPLOADS_DIR
   ? path.resolve(process.env.UPLOADS_DIR)
   : path.join(__dirname, 'public', 'uploads');
@@ -31,6 +32,13 @@ const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false }
 });
+
+const secondaryPool = SECONDARY_DATABASE_URL
+  ? new Pool({
+      connectionString: SECONDARY_DATABASE_URL,
+      ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false }
+    })
+  : null;
 
 const io = new Server(server, {
   cors: {
@@ -117,6 +125,57 @@ function publicUser(user, viewerId = null, blockedUserIds = []) {
 
 async function query(sql, params = []) {
   return pool.query(sql, params);
+}
+
+async function secondaryQuery(sql, params = []) {
+  if (!secondaryPool) {
+    throw new Error('SECONDARY_DATABASE_URL is not configured');
+  }
+  return secondaryPool.query(sql, params);
+}
+
+async function storeMediaFile({ mediaId, ownerUserId = null, mimeType = 'application/octet-stream', originalName = '', sizeBytes = 0, data = Buffer.alloc(0) }) {
+  const blobBuffer = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
+  const metadataBuffer = secondaryPool ? Buffer.alloc(0) : blobBuffer;
+  await query(
+    `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [mediaId, ownerUserId, String(mimeType || 'application/octet-stream'), String(originalName || ''), Number(sizeBytes || blobBuffer.length || 0), metadataBuffer]
+  );
+  if (secondaryPool) {
+    await secondaryQuery(
+      `INSERT INTO media_blobs (id, data, size_bytes)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, size_bytes = EXCLUDED.size_bytes`,
+      [mediaId, blobBuffer, Number(sizeBytes || blobBuffer.length || 0)]
+    );
+  }
+}
+
+async function getMediaById(mediaId) {
+  const result = await query('SELECT id, mime_type, original_name, data, size_bytes, created_at FROM media_files WHERE id = $1 LIMIT 1', [mediaId]);
+  const media = result.rows[0];
+  if (!media) return null;
+  let buffer = media.data;
+  if (secondaryPool && (!buffer || !buffer.length)) {
+    const blobResult = await secondaryQuery('SELECT data, size_bytes FROM media_blobs WHERE id = $1 LIMIT 1', [mediaId]).catch(() => ({ rows: [] }));
+    const blob = blobResult.rows[0];
+    if (blob?.data) {
+      buffer = blob.data;
+      if (!media.size_bytes) media.size_bytes = blob.size_bytes;
+    }
+  }
+  return {
+    ...media,
+    data: buffer || Buffer.alloc(0)
+  };
+}
+
+async function deleteMediaById(mediaId) {
+  await deleteMediaById(mediaId);
+  if (secondaryPool) {
+    await secondaryQuery('DELETE FROM media_blobs WHERE id = $1', [mediaId]).catch(() => null);
+  }
 }
 
 
@@ -611,6 +670,16 @@ async function initDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  if (secondaryPool) {
+    await secondaryQuery(`
+      CREATE TABLE IF NOT EXISTS media_blobs (
+        id TEXT PRIMARY KEY,
+        data BYTEA NOT NULL,
+        size_bytes BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+  }
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_id TEXT NULL REFERENCES media_files(id) ON DELETE SET NULL;`);
   await query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id TEXT NULL REFERENCES messages(id) ON DELETE SET NULL;`);
 
@@ -856,8 +925,7 @@ app.get('/api/media/:mediaId', async (req, res) => {
   try {
     const mediaId = String(req.params.mediaId || '');
     if (!mediaId) return res.status(400).json({ error: 'Не указан файл' });
-    const result = await query('SELECT mime_type, original_name, data, size_bytes FROM media_files WHERE id = $1 LIMIT 1', [mediaId]);
-    const media = result.rows[0];
+    const media = await getMediaById(mediaId);
     if (!media) return res.status(404).json({ error: 'Файл не найден' });
 
     const buffer = media.data;
@@ -902,6 +970,7 @@ app.get('/api/media/:mediaId', async (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 console.log('[media] New uploads use PostgreSQL storage; local /uploads is legacy read-only compatibility.');
+console.log(`[db] Secondary database ${secondaryPool ? 'enabled' : 'disabled'}${secondaryPool ? ' for media blobs' : ''}.`);
 
 app.post('/api/register', async (req, res) => {
   try {
@@ -1002,18 +1071,14 @@ app.post('/api/profile/photo', memoryUpload.single('photo'), async (req, res) =>
 
     const file = req.file;
     const mediaId = crypto.randomUUID();
-    await query(
-      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        mediaId,
-        userId,
-        String(file.mimetype || 'application/octet-stream'),
-        String(file.originalname || 'avatar'),
-        Number(file.size || 0),
-        file.buffer
-      ]
-    );
+    await storeMediaFile({
+      mediaId,
+      ownerUserId: userId,
+      mimeType: String(file.mimetype || 'application/octet-stream'),
+      originalName: String(file.originalname || 'avatar'),
+      sizeBytes: Number(file.size || 0),
+      data: file.buffer
+    });
 
     await query('UPDATE users SET photo = $2 WHERE id = $1', [userId, `/api/media/${mediaId}`]);
     const user = await getUserById(userId);
@@ -1233,11 +1298,14 @@ app.post('/api/groups/:groupId/photo', memoryUpload.single('photo'), async (req,
     if (!membership.rowCount) return res.status(403).json({ error: 'Нет доступа к этой беседе' });
 
     const mediaId = crypto.randomUUID();
-    await query(
-      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [mediaId, currentUserId, String(file.mimetype || 'application/octet-stream'), String(file.originalname || ''), Number(file.size || 0), file.buffer]
-    );
+    await storeMediaFile({
+      mediaId,
+      ownerUserId: currentUserId,
+      mimeType: String(file.mimetype || 'application/octet-stream'),
+      originalName: String(file.originalname || ''),
+      sizeBytes: Number(file.size || 0),
+      data: file.buffer
+    });
 
     const photoUrl = `/api/media/${mediaId}`;
     await query('UPDATE groups SET photo = $2 WHERE id = $1', [groupId, photoUrl]);
@@ -1645,11 +1713,14 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
     const messageId = crypto.randomUUID();
     const mediaId = crypto.randomUUID();
 
-    await query(
-      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [mediaId, String(sender.id), String(file.mimetype || 'application/octet-stream'), String(file.originalname || ''), Number(file.size || 0), file.buffer]
-    );
+    await storeMediaFile({
+      mediaId,
+      ownerUserId: String(sender.id),
+      mimeType: String(file.mimetype || 'application/octet-stream'),
+      originalName: String(file.originalname || ''),
+      sizeBytes: Number(file.size || 0),
+      data: file.buffer
+    });
 
     try {
       await query(
@@ -1660,7 +1731,7 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
       );
     } catch (insertError) {
       if (String(insertError?.code || '') === '23505' && clientMessageId) {
-        await query('DELETE FROM media_files WHERE id = $1', [mediaId]).catch(() => null);
+        await deleteMediaById(mediaId);
         const existing = await query(
           'SELECT id FROM messages WHERE sender_id = $1 AND dialog_id = $2 AND client_message_id = $3 LIMIT 1',
           [String(sender.id), dialogId, clientMessageId]
@@ -1715,11 +1786,14 @@ app.post('/api/messages/avatar-suggestion', memoryUpload.single('photo'), async 
     const mediaId = crypto.randomUUID();
     const deliveredAt = onlineUsers.has(String(recipient.id)) ? new Date().toISOString() : null;
 
-    await query(
-      `INSERT INTO media_files (id, owner_user_id, mime_type, original_name, size_bytes, data)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [mediaId, String(sender.id), String(file.mimetype || 'application/octet-stream'), String(file.originalname || ''), Number(file.size || 0), file.buffer]
-    );
+    await storeMediaFile({
+      mediaId,
+      ownerUserId: String(sender.id),
+      mimeType: String(file.mimetype || 'application/octet-stream'),
+      originalName: String(file.originalname || ''),
+      sizeBytes: Number(file.size || 0),
+      data: file.buffer
+    });
 
     try {
       await query(
@@ -1730,7 +1804,7 @@ app.post('/api/messages/avatar-suggestion', memoryUpload.single('photo'), async 
       );
     } catch (insertError) {
       if (String(insertError?.code || '') === '23505' && clientMessageId) {
-        await query('DELETE FROM media_files WHERE id = $1', [mediaId]).catch(() => null);
+        await deleteMediaById(mediaId);
         const existing = await query(
           'SELECT id FROM messages WHERE sender_id = $1 AND dialog_id = $2 AND client_message_id = $3 LIMIT 1',
           [String(sender.id), dialogId, clientMessageId]
