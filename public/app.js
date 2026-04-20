@@ -25,6 +25,7 @@ const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const messageAttachBtn = document.getElementById('messageAttachBtn');
 const voiceRecordBtn = document.getElementById('voiceRecordBtn');
+const videoNoteBtn = document.getElementById('videoNoteBtn');
 const composerTextRow = document.getElementById('composerTextRow');
 const voiceRecordingPanel = document.getElementById('voiceRecordingPanel');
 const voiceRecordingWave = document.getElementById('voiceRecordingWave');
@@ -33,6 +34,11 @@ const cancelVoiceRecordingBtn = document.getElementById('cancelVoiceRecordingBtn
 const sendVoiceRecordingBtn = document.getElementById('sendVoiceRecordingBtn');
 const voiceRecordingSwipeHint = document.getElementById('voiceRecordingSwipeHint');
 const voiceRecordingShell = document.querySelector('.voice-recording-shell');
+const videoNoteRecordingPanel = document.getElementById('videoNoteRecordingPanel');
+const videoNotePreview = document.getElementById('videoNotePreview');
+const videoNoteRecordingTime = document.getElementById('videoNoteRecordingTime');
+const cancelVideoNoteBtn = document.getElementById('cancelVideoNoteBtn');
+const sendVideoNoteBtn = document.getElementById('sendVideoNoteBtn');
 const messageAttachmentInput = document.getElementById('messageAttachmentInput');
 const messageAttachmentPreview = document.getElementById('messageAttachmentPreview');
 const messageAttachmentName = document.getElementById('messageAttachmentName');
@@ -129,6 +135,40 @@ function isCompactMobileLayout() {
 
 function syncResponsiveLayout() {
   document.body.classList.toggle('mobile-chat-open', Boolean(currentDialogUser) && isCompactMobileLayout());
+  document.body.classList.toggle('coarse-pointer', isCoarsePointerDevice());
+  updateVideoNoteComposer();
+  updateMobileRecordButton();
+}
+
+function isCoarsePointerDevice() {
+  return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+}
+
+function usesUnifiedMobileRecordButton() {
+  return isCompactMobileLayout() && isCoarsePointerDevice();
+}
+
+function getMobileRecordMode() {
+  if (mobileRecordMode === 'video' && canUseVideoNotes()) return 'video';
+  return 'voice';
+}
+
+function cycleMobileRecordMode() {
+  mobileRecordMode = getMobileRecordMode() === 'voice' && canUseVideoNotes() ? 'video' : 'voice';
+  updateMobileRecordButton();
+}
+
+function updateMobileRecordButton() {
+  if (!voiceRecordBtn) return;
+  const mode = getMobileRecordMode();
+  const unified = usesUnifiedMobileRecordButton();
+  voiceRecordBtn.dataset.mode = mode;
+  voiceRecordBtn.classList.toggle('mode-video', mode === 'video');
+  voiceRecordBtn.classList.toggle('mode-voice', mode !== 'video');
+  voiceRecordBtn.classList.toggle('mobile-unified-record-btn', unified);
+  voiceRecordBtn.title = mode === 'video' ? 'Нажмите, чтобы переключить на голосовое. Удерживайте для записи кружка' : 'Нажмите, чтобы переключить на кружок. Удерживайте для записи голосового';
+  voiceRecordBtn.setAttribute('aria-label', voiceRecordBtn.title);
+  if (videoNoteBtn) videoNoteBtn.classList.toggle('hidden', unified || !canUseVideoNotes() || isRecordingVideoNote);
 }
 
 const APP_CONFIG = window.APP_CONFIG || {};
@@ -138,6 +178,46 @@ const groupModalState = {
   mode: 'create',
   groupId: ''
 };
+
+
+function canUseVideoNotes() {
+  return isCompactMobileLayout() && Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== 'undefined';
+}
+
+function updateVideoNoteComposer() {
+  const active = isRecordingVideoNote;
+  videoNoteRecordingPanel?.classList.toggle('hidden', !active);
+  composerTextRow?.classList.toggle('hidden', active);
+  const unified = usesUnifiedMobileRecordButton();
+  if (videoNoteBtn) {
+    videoNoteBtn.classList.toggle('is-recording', active);
+    videoNoteBtn.classList.toggle('hidden', unified || (!canUseVideoNotes() && !active));
+  }
+  if (voiceRecordBtn) voiceRecordBtn.classList.toggle('hidden', active);
+  updateMobileRecordButton();
+}
+
+function startVideoNoteVisualization() {
+  updateVideoNoteComposer();
+  videoNoteStartedAt = Date.now();
+  if (videoNoteRecordingTime) videoNoteRecordingTime.textContent = '0:00';
+  clearInterval(videoNoteTimerInterval);
+  videoNoteTimerInterval = setInterval(() => {
+    if (videoNoteRecordingTime) videoNoteRecordingTime.textContent = formatAudioTime((Date.now() - videoNoteStartedAt) / 1000);
+  }, 250);
+}
+
+function stopVideoNoteVisualization() {
+  clearInterval(videoNoteTimerInterval);
+  videoNoteTimerInterval = null;
+  if (videoNoteRecordingTime) videoNoteRecordingTime.textContent = '0:00';
+  if (videoNotePreview) {
+    try { videoNotePreview.pause(); } catch (e) {}
+    videoNotePreview.srcObject = null;
+    videoNotePreview.removeAttribute('src');
+  }
+  updateVideoNoteComposer();
+}
 
 function apiUrl(path) {
   if (!path.startsWith('/')) return `${API_BASE_URL}/${path}`;
@@ -316,6 +396,20 @@ let mediaRecorder = null;
 let mediaRecorderStream = null;
 let recordedChunks = [];
 let isRecordingVoice = false;
+let videoNoteRecorder = null;
+let videoNoteRecorderStream = null;
+let videoNoteChunks = [];
+let isRecordingVideoNote = false;
+let pendingVideoNoteSendOnStop = false;
+let isFinishingVideoNoteRecording = false;
+let videoNoteStartedAt = 0;
+let videoNoteTimerInterval = null;
+let mobileRecordMode = 'voice';
+let mobileRecordPressTimer = null;
+let mobileRecordPointerId = null;
+let mobileRecordPressTriggered = false;
+let mobileRecordSuppressClickUntil = 0;
+const MOBILE_RECORD_HOLD_MS = 220;
 let recordingStartedAt = 0;
 let recordingTimerId = null;
 let recordingAnimationId = null;
@@ -997,6 +1091,7 @@ async function sendPendingAttachment() {
       formData.append('clientMessageId', createClientMessageId('upload'));
       if (replyTargetMessageId && index === 0) formData.append('replyToMessageId', replyTargetMessageId);
       formData.append('file', file);
+      if (file && file._isRoundVideo) formData.append('isRoundVideo', '1');
 
       const response = await fetch(apiUrl('/api/messages/upload'), {
         method: 'POST',
@@ -1218,6 +1313,7 @@ function showDialogUI(hasDialog) {
   chat.classList.toggle('hidden', !hasDialog);
   inputArea.classList.toggle('hidden', !hasDialog);
   if (!hasDialog && isRecordingVoice) finishVoiceRecording({ cancel: true });
+  if (!hasDialog && isRecordingVideoNote) finishVideoNoteRecording({ cancel: true });
   chatScrollControls.classList.toggle('hidden', !hasDialog);
   updateChatScrollControls();
 }
@@ -1766,6 +1862,26 @@ function createAvatarSuggestionNode(message, attachmentUrl, isMe) {
   return wrap;
 }
 
+
+function createRoundVideoMessageNode(message, attachmentUrl, isMe) {
+  const wrap = document.createElement('div');
+  wrap.className = `video-note-message ${isMe ? 'me' : 'other'}`;
+  const video = document.createElement('video');
+  video.className = 'video-note-video';
+  video.src = attachmentUrl;
+  video.preload = 'metadata';
+  video.playsInline = true;
+  video.controls = true;
+  video.addEventListener('click', (event) => {
+    if (event.target === video) {
+      event.preventDefault();
+      openMediaViewer(attachmentUrl, 'video', message.attachmentName || 'Кружок');
+    }
+  });
+  wrap.appendChild(video);
+  return wrap;
+}
+
 function createMessageNode(message) {
   const node = document.createElement('div');
   const isMe = currentUser && message.senderId === currentUser.id;
@@ -1793,17 +1909,21 @@ function createMessageNode(message) {
       mediaNode.loading = 'lazy';
       mediaNode.addEventListener('click', () => openMediaViewer(attachmentUrl, 'image', message.attachmentName || 'Фото'));
     } else if (message.attachmentType === 'video') {
-      mediaNode = document.createElement('video');
-      mediaNode.className = 'dialog-video dialog-media-clickable';
-      mediaNode.src = attachmentUrl;
-      mediaNode.controls = true;
-      mediaNode.preload = 'metadata';
-      mediaNode.addEventListener('click', (event) => {
-        if (event.target === mediaNode) {
-          event.preventDefault();
-          openMediaViewer(attachmentUrl, 'video', message.attachmentName || 'Видео');
-        }
-      });
+      if (message.isRoundVideo) {
+        mediaNode = createRoundVideoMessageNode(message, attachmentUrl, isMe);
+      } else {
+        mediaNode = document.createElement('video');
+        mediaNode.className = 'dialog-video dialog-media-clickable';
+        mediaNode.src = attachmentUrl;
+        mediaNode.controls = true;
+        mediaNode.preload = 'metadata';
+        mediaNode.addEventListener('click', (event) => {
+          if (event.target === mediaNode) {
+            event.preventDefault();
+            openMediaViewer(attachmentUrl, 'video', message.attachmentName || 'Видео');
+          }
+        });
+      }
     } else if (message.attachmentType === 'audio') {
       mediaNode = createVoiceMessageNode(message, attachmentUrl, isMe);
     } else if (message.attachmentType === 'document') {
@@ -1965,9 +2085,15 @@ function applyDialogRestrictions() {
   messageInput.disabled = !currentDialogState.canMessage;
   sendBtn.disabled = !currentDialogState.canMessage;
   if (messageAttachBtn) messageAttachBtn.disabled = !currentDialogState.canMessage;
-  if (voiceRecordBtn) voiceRecordBtn.disabled = !currentDialogState.canMessage || isRecordingVoice;
+  if (voiceRecordBtn) {
+    const unified = usesUnifiedMobileRecordButton();
+    voiceRecordBtn.disabled = !currentDialogState.canMessage || (unified ? false : (isRecordingVoice || isRecordingVideoNote));
+  }
+  if (videoNoteBtn) videoNoteBtn.disabled = !currentDialogState.canMessage || isRecordingVoice || isRecordingVideoNote || !canUseVideoNotes() || usesUnifiedMobileRecordButton();
   if (cancelVoiceRecordingBtn) cancelVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
   if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
+  if (cancelVideoNoteBtn) cancelVideoNoteBtn.disabled = !currentDialogState.canMessage;
+  if (sendVideoNoteBtn) sendVideoNoteBtn.disabled = !currentDialogState.canMessage;
   if (!editingMessageId) {
     messageInput.placeholder = currentDialogState.canMessage ? 'Введите сообщение...' : 'Отправка сообщений недоступна';
   }
@@ -2496,7 +2622,7 @@ async function sendAvatarSuggestion(file) {
   }
 }
 
-async function toggleVoiceRecording() {
+async function startVoiceRecording() {
   if (isRecordingVoice) {
     await finishVoiceRecording({ send: false });
     return;
@@ -2556,6 +2682,160 @@ async function toggleVoiceRecording() {
   } catch (error) {
     alert('Не удалось получить доступ к микрофону');
   }
+}
+
+async function toggleVoiceRecording() {
+  if (isRecordingVoice) {
+    await finishVoiceRecording({ send: false });
+    return;
+  }
+  await startVoiceRecording();
+}
+
+
+async function finishVideoNoteRecording({ cancel = false, send = false } = {}) {
+  if (isFinishingVideoNoteRecording) {
+    if (send && !cancel) pendingVideoNoteSendOnStop = true;
+    return;
+  }
+  pendingVideoNoteSendOnStop = Boolean(send && !cancel);
+  if (!isRecordingVideoNote) {
+    pendingVideoNoteSendOnStop = false;
+    return;
+  }
+  isFinishingVideoNoteRecording = true;
+  if (videoNoteRecorder && videoNoteRecorder.state !== 'inactive') videoNoteRecorder.stop();
+  else isFinishingVideoNoteRecording = false;
+}
+
+async function startVideoNoteRecording() {
+  if (!canUseVideoNotes()) {
+    alert('Кружки доступны только на телефоне');
+    return;
+  }
+  if (isRecordingVideoNote) {
+    await finishVideoNoteRecording({ send: false });
+    return;
+  }
+  try {
+    videoNoteRecorderStream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 480 } }
+    });
+    videoNoteChunks = [];
+    pendingVideoNoteSendOnStop = false;
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm';
+    videoNoteRecorder = new MediaRecorder(videoNoteRecorderStream, { mimeType });
+    if (videoNotePreview) videoNotePreview.srcObject = videoNoteRecorderStream;
+    videoNoteRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) videoNoteChunks.push(event.data);
+    };
+    videoNoteRecorder.onstop = async () => {
+      const shouldSend = pendingVideoNoteSendOnStop;
+      pendingVideoNoteSendOnStop = false;
+      isRecordingVideoNote = false;
+      isFinishingVideoNoteRecording = false;
+      stopVideoNoteVisualization();
+      videoNoteRecorderStream?.getTracks?.().forEach((track) => track.stop());
+      videoNoteRecorderStream = null;
+      const hasVideo = videoNoteChunks.some((chunk) => chunk.size > 0);
+      if (!hasVideo) {
+        videoNoteChunks = [];
+        return;
+      }
+      const blob = new Blob(videoNoteChunks, { type: videoNoteRecorder?.mimeType || 'video/webm' });
+      videoNoteChunks = [];
+      const file = new File([blob], `videonote_${Date.now()}.webm`, { type: blob.type || 'video/webm' });
+      file._isRoundVideo = true;
+      if (shouldSend) {
+        pendingAttachments = [file];
+        pendingAttachmentIndex = 0;
+        requestAnimationFrame(() => sendPendingAttachment());
+      } else {
+        setPendingAttachment(file);
+      }
+    };
+    videoNoteRecorder.start();
+    isRecordingVideoNote = true;
+    startVideoNoteVisualization();
+  } catch (error) {
+    alert('Не удалось получить доступ к камере и микрофону');
+  }
+}
+
+async function toggleVideoNoteRecording() {
+  if (isRecordingVideoNote) {
+    await finishVideoNoteRecording({ send: false });
+    return;
+  }
+  await startVideoNoteRecording();
+}
+
+async function startUnifiedMobileRecord() {
+  if (getMobileRecordMode() === 'video') return startVideoNoteRecording();
+  return startVoiceRecording();
+}
+
+async function finishUnifiedMobileRecord({ cancel = false } = {}) {
+  if (isRecordingVideoNote) return finishVideoNoteRecording({ cancel, send: !cancel });
+  if (isRecordingVoice) return finishVoiceRecording({ cancel, send: !cancel });
+}
+
+function clearMobileRecordPressState() {
+  if (mobileRecordPressTimer) {
+    clearTimeout(mobileRecordPressTimer);
+    mobileRecordPressTimer = null;
+  }
+  mobileRecordPointerId = null;
+  voiceRecordBtn?.classList.remove('is-press-armed');
+}
+
+function bindUnifiedMobileRecordButton() {
+  if (!voiceRecordBtn) return;
+
+  voiceRecordBtn.addEventListener('pointerdown', (event) => {
+    if (!usesUnifiedMobileRecordButton() || !currentDialogState.canMessage || voiceRecordBtn.disabled || event.pointerType === 'mouse') return;
+    mobileRecordPointerId = event.pointerId;
+    mobileRecordPressTriggered = false;
+    mobileRecordSuppressClickUntil = 0;
+    voiceRecordBtn.classList.add('is-press-armed');
+    try { voiceRecordBtn.setPointerCapture(event.pointerId); } catch {}
+    mobileRecordPressTimer = window.setTimeout(async () => {
+      mobileRecordPressTriggered = true;
+      voiceRecordBtn.classList.add('is-press-armed', 'is-recording');
+      await startUnifiedMobileRecord();
+    }, MOBILE_RECORD_HOLD_MS);
+    event.preventDefault();
+  });
+
+  const release = async (event, cancel = false) => {
+    if (!usesUnifiedMobileRecordButton()) return;
+    if (mobileRecordPointerId !== null && event.pointerId !== undefined && mobileRecordPointerId !== event.pointerId) return;
+    const triggered = mobileRecordPressTriggered;
+    clearMobileRecordPressState();
+    mobileRecordPressTriggered = false;
+    if (triggered) {
+      mobileRecordSuppressClickUntil = Date.now() + 450;
+      await finishUnifiedMobileRecord({ cancel });
+    } else if (!cancel) {
+      cycleMobileRecordMode();
+    }
+    voiceRecordBtn?.classList.remove('is-recording');
+    updateMobileRecordButton();
+    event.preventDefault();
+  };
+
+  voiceRecordBtn.addEventListener('pointerup', (event) => { release(event, false); });
+  voiceRecordBtn.addEventListener('pointercancel', (event) => { release(event, true); });
+  voiceRecordBtn.addEventListener('lostpointercapture', (event) => {
+    if (!usesUnifiedMobileRecordButton() || mobileRecordPointerId === null) return;
+    release(event, true);
+  });
+  voiceRecordBtn.addEventListener('click', (event) => {
+    if (!usesUnifiedMobileRecordButton()) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
 }
 
 async function submitAuth() {
@@ -2932,13 +3212,23 @@ if (avatarSuggestionInput) {
   });
 }
 if (voiceRecordBtn) {
-  voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
+  if (usesUnifiedMobileRecordButton()) bindUnifiedMobileRecordButton();
+  else voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
+}
+if (videoNoteBtn && !usesUnifiedMobileRecordButton()) {
+  videoNoteBtn.addEventListener('click', toggleVideoNoteRecording);
 }
 if (cancelVoiceRecordingBtn) {
   cancelVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ cancel: true }));
 }
 if (sendVoiceRecordingBtn) {
   sendVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ send: true }));
+}
+if (cancelVideoNoteBtn) {
+  cancelVideoNoteBtn.addEventListener('click', () => finishVideoNoteRecording({ cancel: true }));
+}
+if (sendVideoNoteBtn) {
+  sendVideoNoteBtn.addEventListener('click', () => finishVideoNoteRecording({ send: true }));
 }
 if (createGroupBtn) createGroupBtn.addEventListener('click', openGroupModal);
 if (addGroupMembersBtn) addGroupMembersBtn.addEventListener('click', openAddMembersModal);
@@ -3211,3 +3501,5 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+
+updateVideoNoteComposer();

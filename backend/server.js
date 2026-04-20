@@ -93,7 +93,8 @@ function mapMessageRow(row) {
     deletedAt: row.deleted_at,
     attachmentUrl: row.attachment_url || (row.media_id ? `/api/media/${row.media_id}` : ''),
     attachmentType: row.attachment_type || '',
-    attachmentName: row.attachment_name || '',
+    attachmentName: row.attachment_name ? String(row.attachment_name).replace(/^\[round\]/, '') : '',
+    isRoundVideo: typeof row.attachment_name === 'string' && row.attachment_name.startsWith('[round]'),
     groupId: row.group_id || '',
     groupName: row.group_name || '',
     isGroup: Boolean(row.group_id),
@@ -1302,7 +1303,7 @@ app.post('/api/groups/:groupId/photo', memoryUpload.single('photo'), async (req,
       mediaId,
       ownerUserId: currentUserId,
       mimeType: String(file.mimetype || 'application/octet-stream'),
-      originalName: String(file.originalname || ''),
+      originalName: String((isRoundVideoMessage ? '[round]' : '') + (file.originalname || '')),
       sizeBytes: Number(file.size || 0),
       data: file.buffer
     });
@@ -1706,6 +1707,7 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
     const replyTarget = await resolveReplyTargetMessage(senderId, { replyToMessageId, recipientId: recipientId || storedRecipientId, groupId });
 
     const attachmentType = detectAttachmentType(file);
+    const isRoundVideoMessage = attachmentType === 'video' && String(isRoundVideo) === '1';
     if (!attachmentType) {
       return res.status(400).json({ error: 'Можно отправлять фото, видео, голосовые и Office-файлы' });
     }
@@ -1717,7 +1719,7 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
       mediaId,
       ownerUserId: String(sender.id),
       mimeType: String(file.mimetype || 'application/octet-stream'),
-      originalName: String(file.originalname || ''),
+      originalName: String((isRoundVideoMessage ? '[round]' : '') + (file.originalname || '')),
       sizeBytes: Number(file.size || 0),
       data: file.buffer
     });
@@ -1727,7 +1729,7 @@ app.post('/api/messages/upload', memoryUpload.single('file'), async (req, res) =
         `INSERT INTO messages (
           id, dialog_id, text, sender_id, recipient_id, delivered_at, read_at, edited_at, deleted_at, attachment_url, attachment_type, attachment_name, group_id, media_id, client_message_id, reply_to_message_id
         ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, '', $7, $8, $9, $10, $11, $12)`,
-        [messageId, dialogId, text, String(sender.id), storedRecipientId, deliveredAt, attachmentType, file.originalname || '', groupId || null, mediaId, clientMessageId, replyTarget?.id || null]
+        [messageId, dialogId, text, String(sender.id), storedRecipientId, deliveredAt, attachmentType, (isRoundVideoMessage ? '[round]' : '') + (file.originalname || ''), groupId || null, mediaId, clientMessageId, replyTarget?.id || null]
       );
     } catch (insertError) {
       if (String(insertError?.code || '') === '23505' && clientMessageId) {
@@ -1790,7 +1792,7 @@ app.post('/api/messages/avatar-suggestion', memoryUpload.single('photo'), async 
       mediaId,
       ownerUserId: String(sender.id),
       mimeType: String(file.mimetype || 'application/octet-stream'),
-      originalName: String(file.originalname || ''),
+      originalName: String((isRoundVideoMessage ? '[round]' : '') + (file.originalname || '')),
       sizeBytes: Number(file.size || 0),
       data: file.buffer
     });
