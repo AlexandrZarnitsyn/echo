@@ -130,7 +130,7 @@ const replyComposerText = document.getElementById('replyComposerText');
 const replyComposerClose = document.getElementById('replyComposerClose');
 
 function isCompactMobileLayout() {
-  return window.innerWidth <= 900 || window.matchMedia('(pointer: coarse)').matches;
+  return window.innerWidth <= 900;
 }
 
 function syncResponsiveLayout() {
@@ -141,7 +141,7 @@ function syncResponsiveLayout() {
 }
 
 function isCoarsePointerDevice() {
-  return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  return window.innerWidth <= 900 && (window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0);
 }
 
 function usesUnifiedMobileRecordButton() {
