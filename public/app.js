@@ -130,50 +130,12 @@ const replyComposerText = document.getElementById('replyComposerText');
 const replyComposerClose = document.getElementById('replyComposerClose');
 
 function isCompactMobileLayout() {
-  return window.innerWidth <= 700;
+  return window.innerWidth <= 900 || window.matchMedia('(pointer: coarse)').matches;
 }
 
 function syncResponsiveLayout() {
-  const compact = isCompactMobileLayout();
-  document.body.classList.toggle('mobile-chat-open', Boolean(currentDialogUser) && compact);
-  document.body.classList.toggle('coarse-pointer', compact && isCoarsePointerDevice());
-  if (!compact) {
-    document.body.classList.remove('mobile-chat-open');
-    document.body.classList.remove('coarse-pointer');
-  }
+  document.body.classList.toggle('mobile-chat-open', Boolean(currentDialogUser) && isCompactMobileLayout());
   updateVideoNoteComposer();
-  updateMobileRecordButton();
-}
-
-function isCoarsePointerDevice() {
-  return window.innerWidth <= 700 && (window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0);
-}
-
-function usesUnifiedMobileRecordButton() {
-  return isCompactMobileLayout() && isCoarsePointerDevice();
-}
-
-function getMobileRecordMode() {
-  if (mobileRecordMode === 'video' && canUseVideoNotes()) return 'video';
-  return 'voice';
-}
-
-function cycleMobileRecordMode() {
-  mobileRecordMode = getMobileRecordMode() === 'voice' && canUseVideoNotes() ? 'video' : 'voice';
-  updateMobileRecordButton();
-}
-
-function updateMobileRecordButton() {
-  if (!voiceRecordBtn) return;
-  const mode = getMobileRecordMode();
-  const unified = usesUnifiedMobileRecordButton();
-  voiceRecordBtn.dataset.mode = mode;
-  voiceRecordBtn.classList.toggle('mode-video', mode === 'video');
-  voiceRecordBtn.classList.toggle('mode-voice', mode !== 'video');
-  voiceRecordBtn.classList.toggle('mobile-unified-record-btn', unified);
-  voiceRecordBtn.title = mode === 'video' ? 'Нажмите, чтобы переключить на голосовое. Удерживайте для записи кружка' : 'Нажмите, чтобы переключить на кружок. Удерживайте для записи голосового';
-  voiceRecordBtn.setAttribute('aria-label', voiceRecordBtn.title);
-  if (videoNoteBtn) videoNoteBtn.classList.toggle('hidden', unified || !canUseVideoNotes() || isRecordingVideoNote);
 }
 
 const APP_CONFIG = window.APP_CONFIG || {};
@@ -193,13 +155,11 @@ function updateVideoNoteComposer() {
   const active = isRecordingVideoNote;
   videoNoteRecordingPanel?.classList.toggle('hidden', !active);
   composerTextRow?.classList.toggle('hidden', active);
-  const unified = usesUnifiedMobileRecordButton();
   if (videoNoteBtn) {
     videoNoteBtn.classList.toggle('is-recording', active);
-    videoNoteBtn.classList.toggle('hidden', unified || (!canUseVideoNotes() && !active));
+    videoNoteBtn.classList.toggle('hidden', !canUseVideoNotes() && !active);
   }
   if (voiceRecordBtn) voiceRecordBtn.classList.toggle('hidden', active);
-  updateMobileRecordButton();
 }
 
 function startVideoNoteVisualization() {
@@ -409,12 +369,6 @@ let pendingVideoNoteSendOnStop = false;
 let isFinishingVideoNoteRecording = false;
 let videoNoteStartedAt = 0;
 let videoNoteTimerInterval = null;
-let mobileRecordMode = 'voice';
-let mobileRecordPressTimer = null;
-let mobileRecordPointerId = null;
-let mobileRecordPressTriggered = false;
-let mobileRecordSuppressClickUntil = 0;
-const MOBILE_RECORD_HOLD_MS = 220;
 let recordingStartedAt = 0;
 let recordingTimerId = null;
 let recordingAnimationId = null;
@@ -2090,11 +2044,8 @@ function applyDialogRestrictions() {
   messageInput.disabled = !currentDialogState.canMessage;
   sendBtn.disabled = !currentDialogState.canMessage;
   if (messageAttachBtn) messageAttachBtn.disabled = !currentDialogState.canMessage;
-  if (voiceRecordBtn) {
-    const unified = usesUnifiedMobileRecordButton();
-    voiceRecordBtn.disabled = !currentDialogState.canMessage || (unified ? false : (isRecordingVoice || isRecordingVideoNote));
-  }
-  if (videoNoteBtn) videoNoteBtn.disabled = !currentDialogState.canMessage || isRecordingVoice || isRecordingVideoNote || !canUseVideoNotes() || usesUnifiedMobileRecordButton();
+  if (voiceRecordBtn) voiceRecordBtn.disabled = !currentDialogState.canMessage || isRecordingVoice || isRecordingVideoNote;
+  if (videoNoteBtn) videoNoteBtn.disabled = !currentDialogState.canMessage || isRecordingVoice || isRecordingVideoNote || !canUseVideoNotes();
   if (cancelVoiceRecordingBtn) cancelVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
   if (sendVoiceRecordingBtn) sendVoiceRecordingBtn.disabled = !currentDialogState.canMessage;
   if (cancelVideoNoteBtn) cancelVideoNoteBtn.disabled = !currentDialogState.canMessage;
@@ -2627,7 +2578,7 @@ async function sendAvatarSuggestion(file) {
   }
 }
 
-async function startVoiceRecording() {
+async function toggleVoiceRecording() {
   if (isRecordingVoice) {
     await finishVoiceRecording({ send: false });
     return;
@@ -2689,14 +2640,6 @@ async function startVoiceRecording() {
   }
 }
 
-async function toggleVoiceRecording() {
-  if (isRecordingVoice) {
-    await finishVoiceRecording({ send: false });
-    return;
-  }
-  await startVoiceRecording();
-}
-
 
 async function finishVideoNoteRecording({ cancel = false, send = false } = {}) {
   if (isFinishingVideoNoteRecording) {
@@ -2713,7 +2656,7 @@ async function finishVideoNoteRecording({ cancel = false, send = false } = {}) {
   else isFinishingVideoNoteRecording = false;
 }
 
-async function startVideoNoteRecording() {
+async function toggleVideoNoteRecording() {
   if (!canUseVideoNotes()) {
     alert('Кружки доступны только на телефоне');
     return;
@@ -2766,81 +2709,6 @@ async function startVideoNoteRecording() {
   } catch (error) {
     alert('Не удалось получить доступ к камере и микрофону');
   }
-}
-
-async function toggleVideoNoteRecording() {
-  if (isRecordingVideoNote) {
-    await finishVideoNoteRecording({ send: false });
-    return;
-  }
-  await startVideoNoteRecording();
-}
-
-async function startUnifiedMobileRecord() {
-  if (getMobileRecordMode() === 'video') return startVideoNoteRecording();
-  return startVoiceRecording();
-}
-
-async function finishUnifiedMobileRecord({ cancel = false } = {}) {
-  if (isRecordingVideoNote) return finishVideoNoteRecording({ cancel, send: !cancel });
-  if (isRecordingVoice) return finishVoiceRecording({ cancel, send: !cancel });
-}
-
-function clearMobileRecordPressState() {
-  if (mobileRecordPressTimer) {
-    clearTimeout(mobileRecordPressTimer);
-    mobileRecordPressTimer = null;
-  }
-  mobileRecordPointerId = null;
-  voiceRecordBtn?.classList.remove('is-press-armed');
-}
-
-function bindUnifiedMobileRecordButton() {
-  if (!voiceRecordBtn) return;
-
-  voiceRecordBtn.addEventListener('pointerdown', (event) => {
-    if (!usesUnifiedMobileRecordButton() || !currentDialogState.canMessage || voiceRecordBtn.disabled || event.pointerType === 'mouse') return;
-    mobileRecordPointerId = event.pointerId;
-    mobileRecordPressTriggered = false;
-    mobileRecordSuppressClickUntil = 0;
-    voiceRecordBtn.classList.add('is-press-armed');
-    try { voiceRecordBtn.setPointerCapture(event.pointerId); } catch {}
-    mobileRecordPressTimer = window.setTimeout(async () => {
-      mobileRecordPressTriggered = true;
-      voiceRecordBtn.classList.add('is-press-armed', 'is-recording');
-      await startUnifiedMobileRecord();
-    }, MOBILE_RECORD_HOLD_MS);
-    event.preventDefault();
-  });
-
-  const release = async (event, cancel = false) => {
-    if (!usesUnifiedMobileRecordButton()) return;
-    if (mobileRecordPointerId !== null && event.pointerId !== undefined && mobileRecordPointerId !== event.pointerId) return;
-    const triggered = mobileRecordPressTriggered;
-    clearMobileRecordPressState();
-    mobileRecordPressTriggered = false;
-    if (triggered) {
-      mobileRecordSuppressClickUntil = Date.now() + 450;
-      await finishUnifiedMobileRecord({ cancel });
-    } else if (!cancel) {
-      cycleMobileRecordMode();
-    }
-    voiceRecordBtn?.classList.remove('is-recording');
-    updateMobileRecordButton();
-    event.preventDefault();
-  };
-
-  voiceRecordBtn.addEventListener('pointerup', (event) => { release(event, false); });
-  voiceRecordBtn.addEventListener('pointercancel', (event) => { release(event, true); });
-  voiceRecordBtn.addEventListener('lostpointercapture', (event) => {
-    if (!usesUnifiedMobileRecordButton() || mobileRecordPointerId === null) return;
-    release(event, true);
-  });
-  voiceRecordBtn.addEventListener('click', (event) => {
-    if (!usesUnifiedMobileRecordButton()) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }, true);
 }
 
 async function submitAuth() {
@@ -3217,23 +3085,13 @@ if (avatarSuggestionInput) {
   });
 }
 if (voiceRecordBtn) {
-  if (usesUnifiedMobileRecordButton()) bindUnifiedMobileRecordButton();
-  else voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
-}
-if (videoNoteBtn && !usesUnifiedMobileRecordButton()) {
-  videoNoteBtn.addEventListener('click', toggleVideoNoteRecording);
+  voiceRecordBtn.addEventListener('click', toggleVoiceRecording);
 }
 if (cancelVoiceRecordingBtn) {
   cancelVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ cancel: true }));
 }
 if (sendVoiceRecordingBtn) {
   sendVoiceRecordingBtn.addEventListener('click', () => finishVoiceRecording({ send: true }));
-}
-if (cancelVideoNoteBtn) {
-  cancelVideoNoteBtn.addEventListener('click', () => finishVideoNoteRecording({ cancel: true }));
-}
-if (sendVideoNoteBtn) {
-  sendVideoNoteBtn.addEventListener('click', () => finishVideoNoteRecording({ send: true }));
 }
 if (createGroupBtn) createGroupBtn.addEventListener('click', openGroupModal);
 if (addGroupMembersBtn) addGroupMembersBtn.addEventListener('click', openAddMembersModal);
